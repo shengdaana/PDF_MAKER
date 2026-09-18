@@ -25,7 +25,8 @@ if (flutterVersionName == null) {
 
 android {
     namespace "com.example.pdf_maker_pro"
-    compileSdkVersion 35
+    compileSdkVersion 36
+    ndkVersion "28.2.13676358"
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8

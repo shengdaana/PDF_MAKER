@@ -128,7 +128,7 @@ class _PdfMakerProAppState extends State<PdfMakerProApp> {
       colorScheme: colorScheme,
       scaffoldBackgroundColor: background,
       cardColor: cardColor,
-      cardTheme: CardTheme(
+      cardTheme: CardThemeData(
         color: cardColor,
         elevation: isDark ? 0 : 2,
         shape: RoundedRectangleBorder(
@@ -178,10 +178,10 @@ class _PdfMakerProAppState extends State<PdfMakerProApp> {
         ),
       ),
       pageTransitionsTheme: _settings.premiumAnimations
-          ? const PageTransitionsTheme(
+          ? PageTransitionsTheme(
               builders: {
-                TargetPlatform.android: ZoomPageTransitionsBuilder(),
-                TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+                TargetPlatform.android: const ZoomPageTransitionsBuilder(),
+                TargetPlatform.iOS: const CupertinoPageTransitionsBuilder(),
               },
             )
           : const PageTransitionsTheme(

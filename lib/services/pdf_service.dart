@@ -113,14 +113,16 @@ class PdfService {
                     pw.Positioned(
                       left: left,
                       top: top,
-                      width: width > 0 ? width : null,
-                      height: height > 0 ? height : null,
-                      child: pw.Text(
-                        line.text,
-                        style: pw.TextStyle(
-                          // Invisible font color so image is visually untouched
-                          color: const PdfColor(0, 0, 0, 0),
-                          fontSize: height > 0 ? height * 0.85 : 10,
+                      child: pw.SizedBox(
+                        width: width > 0 ? width : null,
+                        height: height > 0 ? height : null,
+                        child: pw.Text(
+                          line.text,
+                          style: pw.TextStyle(
+                            // Invisible font color so image is visually untouched
+                            color: const PdfColor(0, 0, 0, 0),
+                            fontSize: height > 0 ? height * 0.85 : 10,
+                          ),
                         ),
                       ),
                     ),
