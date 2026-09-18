@@ -1,0 +1,57 @@
+name: pdf_maker_pro
+description: "PDF Maker Pro - Convert photos to high-quality searchable PDFs with manual crop, perspective flattening, and on-device OCR."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  # PDF generation & preview
+  pdf: ^3.11.1
+  printing: ^5.13.2
+
+  # Image manipulation, EXIF normalization, perspective & filters
+  image: ^4.2.0
+  image_picker: ^1.1.2
+
+  # Share Intent Handling (cold & warm starts)
+  receive_sharing_intent: ^1.8.1
+
+  # File storage & caching
+  path_provider: ^2.1.4
+  shared_preferences: ^2.2.3
+
+  # Permissions (Android 13+ READ_MEDIA_IMAGES & legacy storage)
+  permission_handler: ^11.3.1
+
+  # On-device OCR (Google ML Kit - 100% offline)
+  google_mlkit_text_recognition: ^0.13.0
+
+  # File opening and system sharing
+  open_filex: ^4.5.0
+  share_plus: ^9.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.13.1
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "assets/icon/app_icon.png"
+  adaptive_icon_background: "#4F46E5"
+  adaptive_icon_foreground: "assets/icon/app_icon_foreground.png"
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/icon/

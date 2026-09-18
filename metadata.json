@@ -1,0 +1,6 @@
+{
+  "name": "PDF Maker Pro",
+  "description": "Convert photos to high-quality searchable PDFs with manual crop, perspective flattening, and on-device OCR.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
