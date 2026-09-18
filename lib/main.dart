@@ -181,7 +181,7 @@ class _PdfMakerProAppState extends State<PdfMakerProApp> {
           ? PageTransitionsTheme(
               builders: {
                 TargetPlatform.android: const ZoomPageTransitionsBuilder(),
-                TargetPlatform.iOS: const CupertinoPageTransitionsBuilder(),
+                TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
               },
             )
           : const PageTransitionsTheme(
@@ -222,8 +222,8 @@ class _NoAnimationPageTransitionsBuilder extends PageTransitionsBuilder {
   Widget buildTransitions<T>(
     PageRoute<T> route,
     BuildContext context,
-    Animation<T> animation,
-    Animation<T> secondaryAnimation,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
     Widget child,
   ) {
     return child; // Instant render without GPU-heavy tween animations
