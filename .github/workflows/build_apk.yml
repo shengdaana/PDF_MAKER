@@ -23,12 +23,8 @@ jobs:
           java-version: '17'
           cache: 'gradle'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android Platform 34
-        run: |
-          yes | sdkmanager --install "platforms;android-34" "build-tools;34.0.0"
+      - name: Accept Android Licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
 
       - name: Set up Flutter SDK
         uses: subosito/flutter-action@v2

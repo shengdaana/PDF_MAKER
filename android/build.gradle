@@ -13,12 +13,20 @@ subprojects {
     project.evaluationDependsOn(':app')
 }
 
-gradle.beforeProject { project ->
-    if (project != rootProject) {
-        project.plugins.withId("com.android.library") {
-            if (project.hasProperty("android")) {
-                project.android {
+subprojects { subproject ->
+    if (subproject.state.executed) {
+        if (subproject.hasProperty("android")) {
+            subproject.android {
+                compileSdkVersion 34
+                buildToolsVersion "34.0.0"
+            }
+        }
+    } else {
+        subproject.afterEvaluate {
+            if (subproject.hasProperty("android")) {
+                subproject.android {
                     compileSdkVersion 34
+                    buildToolsVersion "34.0.0"
                 }
             }
         }
