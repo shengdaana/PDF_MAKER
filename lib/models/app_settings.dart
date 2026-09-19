@@ -31,6 +31,7 @@ class AppSettings {
   AppLanguage language;
   PdfPageSizing pageSizing;
   PdfQualityPreset qualityPreset;
+  bool isDarkMode;
   bool ocrDefault;
   bool hideReorderArrows;
   bool mergePagesBetweenPages;
@@ -42,17 +43,19 @@ class AppSettings {
     this.language = AppLanguage.english,
     this.pageSizing = PdfPageSizing.freeDynamic,
     this.qualityPreset = PdfQualityPreset.standard,
+    this.isDarkMode = false,
     this.ocrDefault = false,
     this.hideReorderArrows = false,
     this.mergePagesBetweenPages = false,
     this.premiumAnimations = false,
-    this.saveFolder = 'Documents/PDF documents(pdf_maker)',
+    this.saveFolder = 'Documents/PDF Maker Pro',
   });
 
   static const String _keyTheme = 'setting_theme';
   static const String _keyLang = 'setting_language';
   static const String _keySizing = 'setting_sizing';
   static const String _keyQuality = 'setting_quality';
+  static const String _keyDarkMode = 'setting_dark_mode';
   static const String _keyOcr = 'setting_ocr';
   static const String _keyHideArrows = 'setting_hide_arrows';
   static const String _keyMergePages = 'setting_merge_pages';
@@ -65,6 +68,7 @@ class AppSettings {
     await prefs.setString(_keyLang, language.name);
     await prefs.setString(_keySizing, pageSizing.name);
     await prefs.setString(_keyQuality, qualityPreset.name);
+    await prefs.setBool(_keyDarkMode, isDarkMode);
     await prefs.setBool(_keyOcr, ocrDefault);
     await prefs.setBool(_keyHideArrows, hideReorderArrows);
     await prefs.setBool(_keyMergePages, mergePagesBetweenPages);
@@ -96,11 +100,12 @@ class AppSettings {
         (e) => e.name == qualityStr,
         orElse: () => PdfQualityPreset.standard,
       ),
+      isDarkMode: prefs.getBool(_keyDarkMode) ?? (themeStr == AppThemePalette.highContrastDark.name),
       ocrDefault: prefs.getBool(_keyOcr) ?? false,
       hideReorderArrows: prefs.getBool(_keyHideArrows) ?? false,
       mergePagesBetweenPages: prefs.getBool(_keyMergePages) ?? false,
       premiumAnimations: prefs.getBool(_keyAnimations) ?? false,
-      saveFolder: prefs.getString(_keyFolder) ?? 'Documents/PDF documents(pdf_maker)',
+      saveFolder: prefs.getString(_keyFolder) ?? 'Documents/PDF Maker Pro',
     );
   }
 }
@@ -158,6 +163,17 @@ class AppStrings {
       'merge_toggle_title': 'Merge Pages Between Pages',
       'anim_toggle_title': 'Premium Animations',
       'anim_toggle_desc': 'Smooth transitions and motion. Keep OFF on low-spec phones for maximum speed.',
+      'dark_mode_title': 'Dark Mode',
+      'dark_mode_desc': 'Enable deep dark theme across the application',
+      'batch_export': 'Batch Export',
+      'batch_delete': 'Batch Delete',
+      'select_all': 'Select All',
+      'selected_count': 'Selected',
+      'edit_pdf': 'Edit PDF',
+      'pdf_editor_title': 'PDF Editor',
+      'change_to_a4': 'Change to A4 Size',
+      'save_changes': 'Save Changes',
+      'save_as_copy': 'Save as Copy',
       'save_folder_title': 'Default Save Folder',
       'privacy_title': 'Privacy & Security Guarantee',
       'privacy_desc': 'Zero data collection, zero telemetry, 100% offline. PDF Maker Pro runs entirely offline. No analytics, no accounts, and no internet access required.',
@@ -211,6 +227,17 @@ class AppStrings {
       'merge_toggle_title': 'पेज आपस में जोड़ने का बटन',
       'anim_toggle_title': 'स्मूथ एनिमेशन (Animations)',
       'anim_toggle_desc': 'धीमे या पुराने फोन पर तेज़ चलने के लिए इसे बंद ही रखें।',
+      'dark_mode_title': 'डार्क मोड',
+      'dark_mode_desc': 'पूरे ऐप में डार्क थीम चालू करें',
+      'batch_export': 'एक साथ शेयर करें',
+      'batch_delete': 'एक साथ हटाएं',
+      'select_all': 'सभी चुनें',
+      'selected_count': 'चुने गए',
+      'edit_pdf': 'पीडीएफ एडिट करें',
+      'pdf_editor_title': 'पीडीएफ एडिटर',
+      'change_to_a4': 'A4 साइज में बदलें',
+      'save_changes': 'बदलाव सेव करें',
+      'save_as_copy': 'नई कॉपी सेव करें',
       'save_folder_title': 'सेव होने का फोल्डर',
       'privacy_title': 'प्राइवेसी और सुरक्षा गारंटी',
       'privacy_desc': 'शून्य डेटा संग्रह, शून्य इंटरनेट। ऐप 100% ऑफलाइन काम करता है। कोई अकाउंट नहीं चाहिए।',
@@ -264,6 +291,17 @@ class AppStrings {
       'merge_toggle_title': 'Page Merge Button Dikhayein',
       'anim_toggle_title': 'Premium Animations',
       'anim_toggle_desc': 'Low-spec phones pe tez speed ke liye OFF rakhein.',
+      'dark_mode_title': 'Dark Mode',
+      'dark_mode_desc': 'Poore app me dark theme enable karein',
+      'batch_export': 'Batch Export (Ek sath share)',
+      'batch_delete': 'Batch Delete',
+      'select_all': 'Select All',
+      'selected_count': 'Selected',
+      'edit_pdf': 'PDF Edit Karein',
+      'pdf_editor_title': 'PDF Editor',
+      'change_to_a4': 'A4 Size me change karein',
+      'save_changes': 'Changes Save Karein',
+      'save_as_copy': 'New Copy Save Karein',
       'save_folder_title': 'Default Save Folder',
       'privacy_title': 'Privacy & Security',
       'privacy_desc': 'Zero data collection, 100% offline. Koi internet access nahi lagta.',

@@ -31,6 +31,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: ListView(
           padding: const EdgeInsets.all(16.0),
           children: [
+            // Dark Mode Switch
+            Card(
+              child: SwitchListTile(
+                secondary: Icon(
+                  settings.isDarkMode ? Icons.dark_mode_rounded : Icons.light_mode_rounded,
+                  color: primaryColor,
+                ),
+                title: Text(
+                  strings.get('dark_mode_title'),
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                subtitle: Text(strings.get('dark_mode_desc')),
+                value: settings.isDarkMode,
+                onChanged: (val) {
+                  settings.isDarkMode = val;
+                  update(settings);
+                },
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
             // 1. Visual Theme (5 High-Contrast Palettes)
             Text(
               strings.get('theme_title'),

@@ -33,6 +33,9 @@ class AppStateScope extends InheritedWidget {
   }
 
   AppStrings get strings => AppStrings(settings.language);
+  bool get premiumAnimations => settings.premiumAnimations;
+  Duration get animDuration =>
+      settings.premiumAnimations ? const Duration(milliseconds: 300) : Duration.zero;
 
   @override
   bool updateShouldNotify(AppStateScope oldWidget) {
@@ -65,8 +68,8 @@ class _PdfMakerProAppState extends State<PdfMakerProApp> {
     _settings.save();
   }
 
-  ThemeData _buildTheme(AppThemePalette palette) {
-    final bool isDark = palette == AppThemePalette.highContrastDark;
+  ThemeData _buildTheme(AppThemePalette palette, {required bool isDark}) {
+    final bool effectiveDark = isDark || palette == AppThemePalette.highContrastDark;
 
     Color primary;
     Color background;
@@ -76,44 +79,64 @@ class _PdfMakerProAppState extends State<PdfMakerProApp> {
 
     switch (palette) {
       case AppThemePalette.indigoBlue:
-        primary = const Color(0xFF4F46E5); // Indigo
-        background = const Color(0xFFF8FAFC); // Clean off-white
-        surface = Colors.white;
-        onSurface = const Color(0xFF1A1C1E); // Deep Slate
-        cardColor = Colors.white;
+        primary = effectiveDark ? const Color(0xFF818CF8) : const Color(0xFF4F46E5);
         break;
       case AppThemePalette.lightGreen:
-        primary = const Color(0xFF16A34A); // Forest Green
-        background = const Color(0xFFF0FDF4); // Soft pale green
-        surface = Colors.white;
-        onSurface = const Color(0xFF0F172A);
-        cardColor = Colors.white;
+        primary = effectiveDark ? const Color(0xFF4ADE80) : const Color(0xFF16A34A);
         break;
       case AppThemePalette.purple:
-        primary = const Color(0xFF7C3AED); // Deep Purple
-        background = const Color(0xFFFAF5FF);
-        surface = Colors.white;
-        onSurface = const Color(0xFF1E1B4B);
-        cardColor = Colors.white;
+        primary = effectiveDark ? const Color(0xFFA78BFA) : const Color(0xFF7C3AED);
         break;
       case AppThemePalette.pink:
-        primary = const Color(0xFFDB2777); // Rose / Pink
-        background = const Color(0xFFFDF2F8);
-        surface = Colors.white;
-        onSurface = const Color(0xFF1F2937);
-        cardColor = Colors.white;
+        primary = effectiveDark ? const Color(0xFFF472B6) : const Color(0xFFDB2777);
         break;
       case AppThemePalette.highContrastDark:
-        primary = const Color(0xFF818CF8); // Bright Indigo for dark contrast
-        background = const Color(0xFF000000); // True Black
-        surface = const Color(0xFF141414);
-        onSurface = Colors.white;
-        cardColor = const Color(0xFF1E1E1E);
+        primary = const Color(0xFF818CF8);
         break;
     }
 
+    if (effectiveDark) {
+      final isHighContrast = palette == AppThemePalette.highContrastDark;
+      background = isHighContrast ? const Color(0xFF000000) : const Color(0xFF121212);
+      surface = isHighContrast ? const Color(0xFF141414) : const Color(0xFF1E1E1E);
+      onSurface = Colors.white;
+      cardColor = isHighContrast ? const Color(0xFF1E1E1E) : const Color(0xFF242424);
+    } else {
+      switch (palette) {
+        case AppThemePalette.indigoBlue:
+          background = const Color(0xFFF8FAFC);
+          surface = Colors.white;
+          onSurface = const Color(0xFF1A1C1E);
+          cardColor = Colors.white;
+          break;
+        case AppThemePalette.lightGreen:
+          background = const Color(0xFFF0FDF4);
+          surface = Colors.white;
+          onSurface = const Color(0xFF0F172A);
+          cardColor = Colors.white;
+          break;
+        case AppThemePalette.purple:
+          background = const Color(0xFFFAF5FF);
+          surface = Colors.white;
+          onSurface = const Color(0xFF1E1B4B);
+          cardColor = Colors.white;
+          break;
+        case AppThemePalette.pink:
+          background = const Color(0xFFFDF2F8);
+          surface = Colors.white;
+          onSurface = const Color(0xFF1F2937);
+          cardColor = Colors.white;
+          break;
+        default:
+          background = const Color(0xFFF8FAFC);
+          surface = Colors.white;
+          onSurface = const Color(0xFF1A1C1E);
+          cardColor = Colors.white;
+      }
+    }
+
     final colorScheme = ColorScheme(
-      brightness: isDark ? Brightness.dark : Brightness.light,
+      brightness: effectiveDark ? Brightness.dark : Brightness.light,
       primary: primary,
       onPrimary: Colors.white,
       secondary: primary,
@@ -131,10 +154,10 @@ class _PdfMakerProAppState extends State<PdfMakerProApp> {
       cardColor: cardColor,
       cardTheme: CardThemeData(
         color: cardColor,
-        elevation: isDark ? 0 : 2,
+        elevation: effectiveDark ? 0 : 2,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
-          side: isDark ? const BorderSide(color: Color(0xFF333333), width: 1.5) : BorderSide.none,
+          side: effectiveDark ? const BorderSide(color: Color(0xFF333333), width: 1.5) : BorderSide.none,
         ),
       ),
       appBarTheme: AppBarTheme(
@@ -152,13 +175,14 @@ class _PdfMakerProAppState extends State<PdfMakerProApp> {
         style: ElevatedButton.styleFrom(
           backgroundColor: primary,
           foregroundColor: Colors.white,
-          minimumSize: const Size(double.infinity, 56),
+          minimumSize: const Size(48, 48),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
           ),
-          elevation: 3,
+          elevation: 2,
           textStyle: const TextStyle(
-            fontSize: 17,
+            fontSize: 16,
             fontWeight: FontWeight.w600,
             letterSpacing: 0.2,
           ),
@@ -168,20 +192,21 @@ class _PdfMakerProAppState extends State<PdfMakerProApp> {
         style: OutlinedButton.styleFrom(
           foregroundColor: primary,
           side: BorderSide(color: primary, width: 2),
-          minimumSize: const Size(double.infinity, 56),
+          minimumSize: const Size(48, 48),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
           ),
           textStyle: const TextStyle(
-            fontSize: 17,
+            fontSize: 16,
             fontWeight: FontWeight.w600,
           ),
         ),
       ),
       pageTransitionsTheme: _settings.premiumAnimations
-          ? PageTransitionsTheme(
+          ? const PageTransitionsTheme(
               builders: {
-                TargetPlatform.android: const ZoomPageTransitionsBuilder(),
+                TargetPlatform.android: FadeUpwardsPageTransitionsBuilder(),
                 TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
               },
             )
@@ -203,7 +228,9 @@ class _PdfMakerProAppState extends State<PdfMakerProApp> {
       child: MaterialApp(
         title: 'PDF Maker Pro',
         debugShowCheckedModeBanner: false,
-        theme: _buildTheme(_settings.themePalette),
+        theme: _buildTheme(_settings.themePalette, isDark: false),
+        darkTheme: _buildTheme(_settings.themePalette, isDark: true),
+        themeMode: _settings.isDarkMode ? ThemeMode.dark : ThemeMode.light,
         initialRoute: '/',
         routes: {
           '/': (context) => const HomeScreen(),

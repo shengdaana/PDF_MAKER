@@ -8,7 +8,7 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import '../models/app_settings.dart';
 import '../models/pdf_page_item.dart';
-import '../utils/image_processing.dart';
+import '../utils/image_processor.dart';
 
 class PdfGenerationResult {
   final File file;
@@ -27,14 +27,94 @@ class PdfGenerationResult {
 }
 
 class PdfService {
-  /// Generates a complete PDF document from the given list of pages
+  /// Resolves the universal storage directory:
+  /// Primary target: /storage/emulated/0/Documents/PDF Maker Pro/
+  /// Robust fallbacks for sandboxed or legacy environments.
+  static Future<Directory> getPdfStorageDirectory() async {
+    if (Platform.isAndroid) {
+      try {
+        final Directory primaryDocs = Directory('/storage/emulated/0/Documents/PDF Maker Pro');
+        if (await primaryDocs.exists()) {
+          return primaryDocs;
+        }
+        await primaryDocs.create(recursive: true);
+        if (await primaryDocs.exists()) {
+          return primaryDocs;
+        }
+      } catch (e) {
+        debugPrint("Notice: direct /storage/emulated/0/Documents access restricted, using fallback: $e");
+      }
+    }
+
+    // Fallback 1: App external storage directory
+    try {
+      final Directory? extDir = await getExternalStorageDirectory();
+      if (extDir != null) {
+        final Directory target = Directory("${extDir.path}/PDF Maker Pro");
+        if (!await target.exists()) {
+          await target.create(recursive: true);
+        }
+        return target;
+      }
+    } catch (_) {}
+
+    // Fallback 2: Standard application documents directory
+    final Directory docDir = await getApplicationDocumentsDirectory();
+    final Directory fallback = Directory("${docDir.path}/PDF Maker Pro");
+    if (!await fallback.exists()) {
+      await fallback.create(recursive: true);
+    }
+    return fallback;
+  }
+
+  /// Returns all search directories where generated PDFs could be located,
+  /// including legacy folders for backward compatibility.
+  static Future<List<Directory>> getAllPdfSearchDirectories() async {
+    final List<Directory> dirs = [];
+    final primary = await getPdfStorageDirectory();
+    dirs.add(primary);
+
+    if (Platform.isAndroid) {
+      final legacyPrimary = Directory('/storage/emulated/0/Documents/PDF documents(pdf_maker)');
+      if (await legacyPrimary.exists()) dirs.add(legacyPrimary);
+    }
+
+    try {
+      final ext = await getExternalStorageDirectory();
+      if (ext != null) {
+        final legacyExt = Directory('${ext.path}/PDF documents(pdf_maker)');
+        if (await legacyExt.exists() && !dirs.any((d) => d.path == legacyExt.path)) {
+          dirs.add(legacyExt);
+        }
+      }
+    } catch (_) {}
+
+    try {
+      final doc = await getApplicationDocumentsDirectory();
+      final legacyDoc = Directory('${doc.path}/PDF documents(pdf_maker)');
+      if (await legacyDoc.exists() && !dirs.any((d) => d.path == legacyDoc.path)) {
+        dirs.add(legacyDoc);
+      }
+    } catch (_) {}
+
+    return dirs;
+  }
+
+  /// Generates a complete PDF document from the given list of pages with
+  /// memory-efficient processing and the universal Standard compression default.
   static Future<PdfGenerationResult> generatePdf({
     required List<PdfPageItem> pages,
     required AppSettings settings,
     required bool enableOcr,
-    required bool isHdQuality,
+    PdfCompressionProfile compressionProfile = PdfCompressionProfile.standard,
+    bool isHdQuality = false,
     Function(double progress, String status)? onProgress,
   }) async {
+    // Resolve effective compression profile
+    final PdfCompressionProfile effectiveProfile = isHdQuality
+        ? PdfCompressionProfile.hdOriginal
+        : compressionProfile;
+
     final pdf = pw.Document();
     final TextRecognizer? textRecognizer = enableOcr
         ? TextRecognizer(script: TextRecognitionScript.latin)
@@ -50,21 +130,24 @@ class PdfService {
         onProgress(progress, 'Processing page ${i + 1} of $totalPages...');
       }
 
-      // 1. Load image and bake current adjustments
+      // 1. Load image and bake current adjustments in a memory-isolated scope
       final File previewFile = File(pageItem.currentPreviewPath);
       final Uint8List rawBytes = await previewFile.readAsBytes();
       final img.Image? decodedImage = img.decodeImage(rawBytes);
 
       if (decodedImage == null) continue;
 
-      // 2. Compress image for PDF (Standard vs HD)
-      final Uint8List compressedBytes = ImageProcessingService.compressForPdf(
+      final double imgWidth = decodedImage.width.toDouble();
+      final double imgHeight = decodedImage.height.toDouble();
+
+      // 2. Compress image using the standard profile (~70-80% size reduction)
+      final Uint8List compressedBytes = ImageProcessor.compressForPdf(
         decodedImage,
-        isHdQuality: isHdQuality,
+        profile: effectiveProfile,
       );
       final pw.MemoryImage pwImage = pw.MemoryImage(compressedBytes);
 
-      // 3. OCR Layer Extraction (English, on-device only)
+      // 3. OCR Layer Extraction (English, 100% on-device)
       RecognizedText? recognizedText;
       if (enableOcr && textRecognizer != null) {
         if (onProgress != null) {
@@ -80,9 +163,6 @@ class PdfService {
 
       // 4. Page Layout Mode (Free / Dynamic vs A4 Standard)
       final bool isFreeDynamic = settings.pageSizing == PdfPageSizing.freeDynamic;
-      final double imgWidth = decodedImage.width.toDouble();
-      final double imgHeight = decodedImage.height.toDouble();
-
       final PdfPageFormat pageFormat = isFreeDynamic
           ? PdfPageFormat(imgWidth, imgHeight, marginAll: 0)
           : PdfPageFormat.a4;
@@ -96,7 +176,7 @@ class PdfService {
 
             final List<pw.Widget> stackChildren = [];
 
-            // A. OCR Invisible Text Layer (Positioned behind visible image)
+            // A. OCR Invisible Text Layer (Positioned for copy/search capability)
             if (recognizedText != null && recognizedText.blocks.isNotEmpty) {
               final scaleX = pageWidth / imgWidth;
               final scaleY = pageHeight / imgHeight;
@@ -119,7 +199,7 @@ class PdfService {
                         child: pw.Text(
                           line.text,
                           style: pw.TextStyle(
-                            // Invisible font color so image is visually untouched
+                            // Transparent ink keeps visible document photo undisturbed
                             color: const PdfColor(0, 0, 0, 0),
                             fontSize: height > 0 ? height * 0.85 : 10,
                           ),
@@ -131,9 +211,9 @@ class PdfService {
               }
             }
 
-            // B. Visible Image
+            // B. Visible Document Photo
             if (isFreeDynamic) {
-              // Full-bleed: zero margins, no letterboxing, exact match
+              // Full-bleed: zero margins, native aspect ratio
               stackChildren.add(
                 pw.Positioned(
                   left: 0,
@@ -176,25 +256,8 @@ class PdfService {
         "${now.second.toString().padLeft(2, '0')}";
     final String fileName = "PDF_$timeStamp.pdf";
 
-    // 6. Target Directory: Documents/PDF documents(pdf_maker)
-    Directory baseDir;
-    try {
-      final extDir = await getExternalStorageDirectory();
-      if (extDir != null) {
-        baseDir = Directory("${extDir.path}/PDF documents(pdf_maker)");
-      } else {
-        final docDir = await getApplicationDocumentsDirectory();
-        baseDir = Directory("${docDir.path}/PDF documents(pdf_maker)");
-      }
-    } catch (_) {
-      final docDir = await getApplicationDocumentsDirectory();
-      baseDir = Directory("${docDir.path}/PDF documents(pdf_maker)");
-    }
-
-    if (!await baseDir.exists()) {
-      await baseDir.create(recursive: true);
-    }
-
+    // 6. Target Directory: /storage/emulated/0/Documents/PDF Maker Pro/
+    final Directory baseDir = await getPdfStorageDirectory();
     final File pdfFile = File("${baseDir.path}/$fileName");
     final Uint8List pdfBytes = await pdf.save();
     await pdfFile.writeAsBytes(pdfBytes);
