@@ -159,8 +159,9 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
         final processed = ImageProcessor.processPipeline(
           sourceImage: raw,
           rotationDegrees: newRotation,
+          cropQuad: page.cropQuad,
           normalizedCropRect: page.normalizedCropRect,
-          isEnhanced: page.isEnhanced,
+          enhanceMode: page.enhanceMode,
           isFlattened: page.isFlattened,
         );
         final newPreview = await ImageProcessor.saveToTempPreviewFile(
@@ -193,7 +194,7 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
     setState(() {
       _enhanceAll = enabled;
       for (final page in _pages) {
-        page.isEnhanced = enabled;
+        page.enhanceMode = enabled ? EnhanceMode.originalColor : EnhanceMode.none;
       }
     });
     await _reprocessAllPreviews();
@@ -206,9 +207,10 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
 
     try {
       for (final page in _pages) {
-        if (!page.isEnhanced &&
+        if (page.enhanceMode == EnhanceMode.none &&
             !page.isFlattened &&
             page.rotationDegrees == 0 &&
+            (page.cropQuad == null || page.cropQuad!.isFullFrame) &&
             page.normalizedCropRect == null) {
           page.currentPreviewPath = page.sourcePath;
           continue;
@@ -220,8 +222,9 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
           final processed = ImageProcessor.processPipeline(
             sourceImage: raw,
             rotationDegrees: page.rotationDegrees,
+            cropQuad: page.cropQuad,
             normalizedCropRect: page.normalizedCropRect,
-            isEnhanced: page.isEnhanced,
+            enhanceMode: page.enhanceMode,
             isFlattened: page.isFlattened,
           );
           final preview = await ImageProcessor.saveToTempPreviewFile(
@@ -563,186 +566,134 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                               key: ValueKey(page.id),
                               margin: const EdgeInsets.symmetric(vertical: 10.0),
                               clipBehavior: Clip.antiAlias,
-                              elevation: 2,
+                              elevation: 3,
                               shape: RoundedRectangleBorder(
                                 borderRadius: BorderRadius.circular(18),
-                                side: BorderSide(
-                                  color: theme.colorScheme.outline.withOpacity(0.15),
-                                  width: 1,
-                                ),
                               ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  // 1. Large Hero Preview Image Container
-                                  GestureDetector(
-                                    onTap: () => _openEditScreen(index),
-                                    child: Stack(
-                                      children: [
-                                        Container(
-                                          width: double.infinity,
-                                          height: 250,
-                                          color: Colors.black.withOpacity(0.04),
-                                          child: Center(
-                                            child: Image.file(
-                                              File(page.currentPreviewPath),
-                                              fit: BoxFit.contain,
-                                              width: double.infinity,
-                                              height: 250,
-                                              key: ValueKey(page.currentPreviewPath),
+                              child: InkWell(
+                                onTap: () => _openEditScreen(index),
+                                child: Stack(
+                                  children: [
+                                    // 1. Edge-to-Edge Photo as Card Background (Hero Style)
+                                    SizedBox(
+                                      width: double.infinity,
+                                      height: 300,
+                                      child: Image.file(
+                                        File(page.currentPreviewPath),
+                                        fit: BoxFit.cover,
+                                        width: double.infinity,
+                                        height: 300,
+                                        key: ValueKey(page.currentPreviewPath),
+                                        errorBuilder: (_, __, ___) => const Center(
+                                          child: Icon(Icons.broken_image_rounded, size: 48, color: Colors.grey),
+                                        ),
+                                      ),
+                                    ),
+
+                                    // 2. Top-Left: Floating Page Badge
+                                    Positioned(
+                                      top: 12,
+                                      left: 12,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                        decoration: BoxDecoration(
+                                          color: const Color(0xAA000000),
+                                          borderRadius: BorderRadius.circular(12),
+                                        ),
+                                        child: Text(
+                                          '${strings.get('page_badge')} ${index + 1} of ${_pages.length}',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 12,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+
+                                    // 3. Top-Right: Floating Delete Page Button
+                                    Positioned(
+                                      top: 8,
+                                      right: 8,
+                                      child: Material(
+                                        color: const Color(0xAA000000),
+                                        shape: const CircleBorder(),
+                                        child: InkWell(
+                                          customBorder: const CircleBorder(),
+                                          onTap: () => _deletePage(index),
+                                          child: const Padding(
+                                            padding: EdgeInsets.all(8.0),
+                                            child: Icon(
+                                              Icons.delete_outline_rounded,
+                                              size: 20,
+                                              color: Colors.white,
                                             ),
                                           ),
                                         ),
+                                      ),
+                                    ),
 
-                                        // Floating Semi-Transparent Page Badge Chip
-                                        Positioned(
-                                          top: 12,
-                                          left: 12,
+                                    // 4. Right Side: Semi-Transparent Reorder Arrows Overlay (REDESIGN 5)
+                                    if (!settings.hideReorderArrows)
+                                      Positioned(
+                                        right: 8,
+                                        top: 90,
+                                        bottom: 60,
+                                        child: Center(
                                           child: Container(
-                                            padding: const EdgeInsets.symmetric(
-                                                horizontal: 10, vertical: 6),
                                             decoration: BoxDecoration(
-                                              color: Colors.black.withOpacity(0.72),
-                                              borderRadius: BorderRadius.circular(12),
-                                              boxShadow: [
-                                                BoxShadow(
-                                                  color: Colors.black.withOpacity(0.2),
-                                                  blurRadius: 4,
-                                                )
+                                              color: const Color(0xAA000000),
+                                              borderRadius: BorderRadius.circular(24),
+                                            ),
+                                            padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
+                                            child: Column(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                IconButton(
+                                                  icon: const Icon(Icons.arrow_upward_rounded, size: 22, color: Colors.white),
+                                                  tooltip: 'Move page up',
+                                                  onPressed: isFirst ? null : () => _movePage(index, index - 1),
+                                                ),
+                                                const SizedBox(height: 4),
+                                                IconButton(
+                                                  icon: const Icon(Icons.arrow_downward_rounded, size: 22, color: Colors.white),
+                                                  tooltip: 'Move page down',
+                                                  onPressed: isLast ? null : () => _movePage(index, index + 1),
+                                                ),
                                               ],
                                             ),
-                                            child: Text(
-                                              '${strings.get('page_badge')} ${index + 1} of ${_pages.length}',
-                                              style: const TextStyle(
+                                          ),
+                                        ),
+                                      ),
+
+                                    // 5. Bottom Overlay: "Tap to edit" bar (REDESIGN 5)
+                                    Positioned(
+                                      bottom: 0,
+                                      left: 0,
+                                      right: 0,
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                                        color: const Color(0xB3000000),
+                                        child: const Row(
+                                          mainAxisAlignment: MainAxisAlignment.center,
+                                          children: [
+                                            Icon(Icons.edit_rounded, size: 16, color: Colors.white),
+                                            SizedBox(width: 8),
+                                            Text(
+                                              'Tap to edit',
+                                              style: TextStyle(
                                                 color: Colors.white,
-                                                fontWeight: FontWeight.bold,
+                                                fontWeight: FontWeight.w600,
                                                 fontSize: 13,
                                                 letterSpacing: 0.3,
                                               ),
                                             ),
-                                          ),
-                                        ),
-
-                                        // Floating Filter Status Badges (Enhance / Flatten)
-                                        Positioned(
-                                          top: 12,
-                                          right: 12,
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              if (page.isEnhanced)
-                                                Container(
-                                                  margin: const EdgeInsets.only(left: 4),
-                                                  padding: const EdgeInsets.symmetric(
-                                                      horizontal: 8, vertical: 4),
-                                                  decoration: BoxDecoration(
-                                                    color: Colors.teal.shade700.withOpacity(0.9),
-                                                    borderRadius: BorderRadius.circular(8),
-                                                  ),
-                                                  child: const Row(
-                                                    mainAxisSize: MainAxisSize.min,
-                                                    children: [
-                                                      Icon(Icons.auto_fix_high_rounded,
-                                                          size: 12, color: Colors.white),
-                                                      SizedBox(width: 4),
-                                                      Text('B&W',
-                                                          style: TextStyle(
-                                                              color: Colors.white,
-                                                              fontSize: 11,
-                                                              fontWeight: FontWeight.bold)),
-                                                    ],
-                                                  ),
-                                                ),
-                                              if (page.isFlattened)
-                                                Container(
-                                                  margin: const EdgeInsets.only(left: 4),
-                                                  padding: const EdgeInsets.symmetric(
-                                                      horizontal: 8, vertical: 4),
-                                                  decoration: BoxDecoration(
-                                                    color: Colors.indigo.shade700.withOpacity(0.9),
-                                                    borderRadius: BorderRadius.circular(8),
-                                                  ),
-                                                  child: const Row(
-                                                    mainAxisSize: MainAxisSize.min,
-                                                    children: [
-                                                      Icon(Icons.filter_center_focus_rounded,
-                                                          size: 12, color: Colors.white),
-                                                      SizedBox(width: 4),
-                                                      Text('Flat',
-                                                          style: TextStyle(
-                                                              color: Colors.white,
-                                                              fontSize: 11,
-                                                              fontWeight: FontWeight.bold)),
-                                                    ],
-                                                  ),
-                                                ),
-                                            ],
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-
-                                  // 2. Action Bar Directly Under the Hero Card
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 10.0, vertical: 6.0),
-                                    decoration: BoxDecoration(
-                                      color: theme.cardColor,
-                                      border: Border(
-                                        top: BorderSide(
-                                          color: theme.colorScheme.outline.withOpacity(0.1),
+                                          ],
                                         ),
                                       ),
                                     ),
-                                    child: Row(
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        // Edit / Crop Button
-                                        TextButton.icon(
-                                          style: TextButton.styleFrom(
-                                            padding: const EdgeInsets.symmetric(
-                                                horizontal: 8, vertical: 6),
-                                            minimumSize: Size.zero,
-                                          ),
-                                          onPressed: () => _openEditScreen(index),
-                                          icon: const Icon(Icons.crop_rotate_rounded, size: 18),
-                                          label: Text(strings.get('btn_crop_rotate'),
-                                              style: const TextStyle(fontWeight: FontWeight.w600)),
-                                        ),
-
-                                        // Rotate 90° Quick Button
-                                        IconButton(
-                                          icon: const Icon(Icons.rotate_right_rounded, size: 22),
-                                          tooltip: 'Rotate 90°',
-                                          onPressed: () => _rotatePage(index),
-                                        ),
-
-                                        // Up / Down Reorder Buttons
-                                        if (!settings.hideReorderArrows) ...[
-                                          IconButton(
-                                            icon: const Icon(Icons.arrow_upward_rounded, size: 20),
-                                            tooltip: 'Move page up',
-                                            onPressed: isFirst ? null : () => _movePage(index, index - 1),
-                                          ),
-                                          IconButton(
-                                            icon: const Icon(Icons.arrow_downward_rounded, size: 20),
-                                            tooltip: 'Move page down',
-                                            onPressed: isLast ? null : () => _movePage(index, index + 1),
-                                          ),
-                                        ],
-
-                                        // Delete Page Button
-                                        IconButton(
-                                          icon: const Icon(Icons.delete_outline_rounded,
-                                              size: 22, color: Colors.redAccent),
-                                          tooltip: 'Delete page',
-                                          onPressed: () => _deletePage(index),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
+                                  ],
+                                ),
                               ),
                             );
 

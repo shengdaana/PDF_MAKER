@@ -38,6 +38,9 @@ dependencies:
   open_filex: ^4.5.0
   share_plus: '>=10.0.1 <14.0.0'
 
+  # Document scanning, corner detection & perspective correction
+  document_scan: ^0.2.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

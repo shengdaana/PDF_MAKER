@@ -362,15 +362,78 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: ListTile(
                 leading: const Icon(Icons.policy_rounded),
                 title: Text(strings.get('licenses_title')),
+                subtitle: const Text('Apache License 2.0'),
                 trailing: const Icon(Icons.chevron_right_rounded),
                 onTap: () {
-                  showLicensePage(
+                  showDialog(
                     context: context,
-                    applicationName: 'PDF Maker Pro',
-                    applicationVersion: '1.0.0',
-                    applicationIcon: Padding(
-                      padding: const EdgeInsets.all(8.0),
-                      child: Icon(Icons.picture_as_pdf_rounded, size: 48, color: primaryColor),
+                    builder: (ctx) => AlertDialog(
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                      title: Row(
+                        children: [
+                          Icon(Icons.policy_rounded, color: primaryColor),
+                          const SizedBox(width: 10),
+                          const Text('License Info'),
+                        ],
+                      ),
+                      content: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'PDF Maker Pro',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Version 1.0.0',
+                            style: TextStyle(
+                              color: theme.colorScheme.onSurface.withOpacity(0.6),
+                              fontSize: 13,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          const Text(
+                            'License:',
+                            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                          ),
+                          const SizedBox(height: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: primaryColor.withOpacity(0.08),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: primaryColor.withOpacity(0.2)),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.verified_outlined, size: 18, color: primaryColor),
+                                const SizedBox(width: 8),
+                                const Text(
+                                  'Apache License 2.0',
+                                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          Text(
+                            'Third-party libraries: Flutter, Google ML Kit, image, pdf, printing, receive_sharing_intent, share_plus (Apache 2.0 / BSD-3-Clause / MIT).',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: theme.colorScheme.onSurface.withOpacity(0.65),
+                              height: 1.4,
+                            ),
+                          ),
+                        ],
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx),
+                          child: const Text('Close'),
+                        ),
+                      ],
                     ),
                   );
                 },

@@ -5,7 +5,6 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 import '../main.dart';
 import '../services/pdf_service.dart';
-import 'pdf_detail_screen.dart';
 
 class GeneratedPdfsScreen extends StatefulWidget {
   const GeneratedPdfsScreen({super.key});
@@ -21,7 +20,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
 
-  // Batch Selection State
+  // Batch selection mode
   bool _isSelectionMode = false;
   final Set<String> _selectedFilePaths = {};
 
@@ -70,7 +69,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
         }
       }
 
-      // Sort newest first
+      // Sort newest modified first
       loaded.sort((a, b) {
         final aTime = a.statSync().modified;
         final bTime = b.statSync().modified;
@@ -100,17 +99,70 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
     }
   }
 
-  void _openDetailScreen(File file) async {
-    final result = await Navigator.push<bool>(
-      context,
-      MaterialPageRoute(
-        builder: (context) => PdfDetailScreen(file: file),
+  Future<void> _openPdf(File file) async {
+    try {
+      final result = await OpenFilex.open(file.path);
+      if (result.type != ResultType.done && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not open file: ${result.message}')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error opening PDF: $e')),
+        );
+      }
+    }
+  }
+
+  void _sharePdf(File file) {
+    Share.shareXFiles([XFile(file.path)], text: file.uri.pathSegments.last);
+  }
+
+  void _confirmDeletePdf(File file) {
+    final fileName = file.uri.pathSegments.last;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Delete PDF?'),
+        content: Text('Are you sure you want to delete "$fileName"? This action cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () async {
+              Navigator.pop(ctx);
+              try {
+                if (await file.exists()) {
+                  await file.delete();
+                }
+                _loadPdfFiles();
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Deleted $fileName')),
+                  );
+                }
+              } catch (e) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Error deleting: $e')),
+                  );
+                }
+              }
+            },
+            child: const Text('Delete'),
+          ),
+        ],
       ),
     );
-
-    if (result == true || mounted) {
-      _loadPdfFiles();
-    }
   }
 
   void _toggleSelection(File file) {
@@ -140,7 +192,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
     });
   }
 
-  void _batchExport() {
+  void _batchShare() {
     if (_selectedFilePaths.isEmpty) return;
     final List<XFile> xFiles = _selectedFilePaths.map((p) => XFile(p)).toList();
     Share.shareXFiles(
@@ -151,154 +203,49 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
 
   void _batchDelete() {
     if (_selectedFilePaths.isEmpty) return;
-    final strings = AppStateScope.of(context).strings;
-
     showDialog(
       context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: Text('${strings.get('batch_delete')} (${_selectedFilePaths.length})'),
-          content: Text(
-            'Are you sure you want to permanently delete ${_selectedFilePaths.length} selected PDF files?',
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text('Delete ${_selectedFilePaths.length} PDFs?'),
+        content: const Text('Are you sure you want to permanently delete these selected PDFs?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: Text(strings.get('cancel_btn')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
             ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.redAccent,
-                foregroundColor: Colors.white,
-              ),
-              onPressed: () async {
-                Navigator.pop(ctx);
-                for (final path in _selectedFilePaths) {
-                  try {
-                    final f = File(path);
-                    if (await f.exists()) {
-                      await f.delete();
-                    }
-                  } catch (e) {
-                    debugPrint("Error deleting $path: $e");
-                  }
-                }
-                setState(() {
-                  _selectedFilePaths.clear();
-                  _isSelectionMode = false;
-                });
-                _loadPdfFiles();
-                if (mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Selected PDFs deleted.')),
-                  );
-                }
-              },
-              child: Text(strings.get('delete_btn')),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _showRenameDialog(File file) {
-    final strings = AppStateScope.of(context).strings;
-    final currentName = file.uri.pathSegments.last;
-    final nameWithoutExt = currentName.endsWith('.pdf')
-        ? currentName.substring(0, currentName.length - 4)
-        : currentName;
-
-    final controller = TextEditingController(text: nameWithoutExt);
-
-    showDialog(
-      context: context,
-      builder: (ctx) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: Row(
-            children: [
-              const Icon(Icons.edit_note_rounded, size: 28),
-              const SizedBox(width: 10),
-              Text(strings.get('btn_rename_pdf')),
-            ],
-          ),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              TextField(
-                controller: controller,
-                autofocus: true,
-                decoration: InputDecoration(
-                  labelText: 'Document Name',
-                  suffixText: '.pdf',
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                  filled: true,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Special characters (\\ / : * ? " < > |) will be sanitized.',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurface.withOpacity(0.55),
-                    ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: Text(strings.get('cancel_btn')),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                final rawName = controller.text.trim();
-                if (rawName.isEmpty) return;
-
-                String sanitized = rawName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
-                if (sanitized.isEmpty) sanitized = "document";
-
-                final parentDir = file.parent;
-                String finalName = "$sanitized.pdf";
-                File targetFile = File("${parentDir.path}/$finalName");
-
-                int counter = 1;
-                while (await targetFile.exists() && targetFile.path != file.path) {
-                  finalName = "$sanitized($counter).pdf";
-                  targetFile = File("${parentDir.path}/$finalName");
-                  counter++;
-                }
-
-                if (targetFile.path == file.path) {
-                  Navigator.pop(ctx);
-                  return;
-                }
-
+            onPressed: () async {
+              Navigator.pop(ctx);
+              int count = 0;
+              for (final path in _selectedFilePaths) {
                 try {
-                  await file.rename(targetFile.path);
-                  if (mounted) {
-                    Navigator.pop(ctx);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Renamed to $finalName')),
-                    );
-                    _loadPdfFiles();
+                  final f = File(path);
+                  if (await f.exists()) {
+                    await f.delete();
+                    count++;
                   }
-                } catch (e) {
-                  debugPrint("Rename failed: $e");
-                  if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Rename failed: $e')),
-                    );
-                  }
-                }
-              },
-              child: Text(strings.get('btn_confirm')),
-            ),
-          ],
-        );
-      },
+                } catch (_) {}
+              }
+              setState(() {
+                _selectedFilePaths.clear();
+                _isSelectionMode = false;
+              });
+              _loadPdfFiles();
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Deleted $count files')),
+                );
+              }
+            },
+            child: const Text('Delete All'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -310,13 +257,39 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
     return '${mb.toStringAsFixed(1)} MB';
   }
 
-  String _formatDate(DateTime dt) {
-    final day = dt.day.toString().padLeft(2, '0');
-    final month = dt.month.toString().padLeft(2, '0');
-    final year = dt.year;
+  String _formatTime(DateTime dt) {
     final hour = dt.hour.toString().padLeft(2, '0');
     final minute = dt.minute.toString().padLeft(2, '0');
-    return '$day/$month/$year $hour:$minute';
+    return '$hour:$minute';
+  }
+
+  String _formatDateHeader(DateTime dt) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final fileDate = DateTime(dt.year, dt.month, dt.day);
+
+    final difference = today.difference(fileDate).inDays;
+    if (difference == 0) return 'Today';
+    if (difference == 1) return 'Yesterday';
+    if (difference < 7) {
+      const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+      return weekdays[dt.weekday - 1];
+    }
+    const months = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'
+    ];
+    return '${months[dt.month - 1]} ${dt.day}, ${dt.year}';
+  }
+
+  Map<String, List<File>> _groupByDate(List<File> files) {
+    final Map<String, List<File>> groups = {};
+    for (final file in files) {
+      final modified = file.statSync().modified;
+      final header = _formatDateHeader(modified);
+      groups.putIfAbsent(header, () => []).add(file);
+    }
+    return groups;
   }
 
   @override
@@ -325,7 +298,8 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
     final strings = appScope.strings;
     final theme = Theme.of(context);
     final primaryColor = theme.colorScheme.primary;
-    final bool enableAnim = appScope.settings.premiumAnimations;
+
+    final groupedFiles = _groupByDate(_filteredFiles);
 
     return Scaffold(
       appBar: AppBar(
@@ -342,7 +316,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
             : null,
         title: Text(
           _isSelectionMode
-              ? '${_selectedFilePaths.length} ${strings.get('selected_count')}'
+              ? '${_selectedFilePaths.length} Selected'
               : strings.get('btn_see_pdfs'),
         ),
         actions: [
@@ -350,9 +324,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
             IconButton(
               icon: const Icon(Icons.checklist_rounded),
               tooltip: 'Batch Selection',
-              onPressed: () {
-                setState(() => _isSelectionMode = true);
-              },
+              onPressed: () => setState(() => _isSelectionMode = true),
             ),
           if (_isSelectionMode)
             IconButton(
@@ -361,7 +333,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                     ? Icons.deselect_rounded
                     : Icons.select_all_rounded,
               ),
-              tooltip: strings.get('select_all'),
+              tooltip: 'Select All',
               onPressed: _toggleSelectAll,
             ),
           IconButton(
@@ -412,185 +384,197 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                 ),
               ),
 
-            // Main Content Area
+            // Main PDF List (REDESIGN 7)
             Expanded(
               child: _isLoading
                   ? const Center(child: CircularProgressIndicator())
                   : _filteredFiles.isEmpty
-                      ? RefreshIndicator(
-                          onRefresh: _loadPdfFiles,
-                          child: ListView(
-                            physics: const AlwaysScrollableScrollPhysics(),
-                            children: [
-                              SizedBox(height: MediaQuery.of(context).size.height * 0.2),
-                              Center(
-                                child: Padding(
-                                  padding: const EdgeInsets.all(32.0),
-                                  child: Column(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Icon(
-                                        Icons.folder_open_rounded,
-                                        size: 72,
-                                        color: primaryColor.withOpacity(0.35),
-                                      ),
-                                      const SizedBox(height: 18),
-                                      Text(
-                                        _searchQuery.isNotEmpty
-                                            ? 'No PDFs match "$_searchQuery"'
-                                            : strings.get('no_pdfs_yet'),
-                                        textAlign: TextAlign.center,
-                                        style: theme.textTheme.bodyLarge?.copyWith(
-                                          color: theme.colorScheme.onSurface.withOpacity(0.65),
-                                          height: 1.4,
-                                        ),
-                                      ),
-                                      if (_searchQuery.isEmpty) ...[
-                                        const SizedBox(height: 24),
-                                        ElevatedButton.icon(
-                                          style: ElevatedButton.styleFrom(
-                                            minimumSize: const Size(200, 48),
-                                          ),
-                                          onPressed: () => Navigator.of(context).pop(),
-                                          icon: const Icon(Icons.add_photo_alternate_rounded),
-                                          label: Text(strings.get('btn_select_gallery')),
-                                        ),
-                                      ]
-                                    ],
+                      ? Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(32.0),
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(
+                                  Icons.folder_open_rounded,
+                                  size: 64,
+                                  color: primaryColor.withOpacity(0.4),
+                                ),
+                                const SizedBox(height: 16),
+                                Text(
+                                  _searchQuery.isNotEmpty
+                                      ? 'No PDFs match "$_searchQuery"'
+                                      : strings.get('no_pdfs_yet'),
+                                  textAlign: TextAlign.center,
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    color: theme.colorScheme.onSurface.withOpacity(0.65),
                                   ),
                                 ),
-                              ),
-                            ],
+                              ],
+                            ),
                           ),
                         )
                       : RefreshIndicator(
                           onRefresh: _loadPdfFiles,
                           child: ListView.builder(
-                            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-                            itemCount: _filteredFiles.length,
-                            itemBuilder: (context, index) {
-                              final file = _filteredFiles[index];
-                              final name = file.uri.pathSegments.last;
-                              final stat = file.existsSync() ? file.statSync() : null;
-                              final isSelected = _selectedFilePaths.contains(file.path);
+                            padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 6.0),
+                            itemCount: groupedFiles.keys.length,
+                            itemBuilder: (context, groupIndex) {
+                              final header = groupedFiles.keys.elementAt(groupIndex);
+                              final filesInGroup = groupedFiles[header]!;
 
-                              Widget cardWidget = Card(
-                                margin: const EdgeInsets.symmetric(vertical: 6),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(16),
-                                  side: isSelected
-                                      ? BorderSide(color: primaryColor, width: 2)
-                                      : BorderSide.none,
-                                ),
-                                child: InkWell(
-                                  borderRadius: BorderRadius.circular(16),
-                                  onTap: () {
-                                    if (_isSelectionMode) {
-                                      _toggleSelection(file);
-                                    } else {
-                                      _openDetailScreen(file);
-                                    }
-                                  },
-                                  onLongPress: () {
-                                    if (!_isSelectionMode) {
-                                      setState(() {
-                                        _isSelectionMode = true;
-                                        _selectedFilePaths.add(file.path);
-                                      });
-                                    }
-                                  },
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(14.0),
+                              return Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  // Date Group Header (Gallery-Style per REDESIGN 7)
+                                  Padding(
+                                    padding: const EdgeInsets.fromLTRB(4, 14, 4, 8),
                                     child: Row(
                                       children: [
-                                        // Checkbox in selection mode or PDF Icon Badge
-                                        if (_isSelectionMode)
-                                          Padding(
-                                            padding: const EdgeInsets.only(right: 8.0),
-                                            child: Checkbox(
-                                              value: isSelected,
-                                              onChanged: (_) => _toggleSelection(file),
-                                            ),
-                                          )
-                                        else
-                                          Container(
-                                            padding: const EdgeInsets.all(12),
-                                            decoration: BoxDecoration(
-                                              color: primaryColor.withOpacity(0.12),
-                                              borderRadius: BorderRadius.circular(12),
-                                            ),
-                                            child: Icon(
-                                              Icons.picture_as_pdf_rounded,
-                                              color: primaryColor,
-                                              size: 32,
-                                            ),
-                                          ),
-                                        const SizedBox(width: 14),
-
-                                        // File Details
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              Text(
-                                                name,
-                                                style: const TextStyle(
-                                                  fontWeight: FontWeight.bold,
-                                                  fontSize: 15,
-                                                ),
-                                                overflow: TextOverflow.ellipsis,
-                                                maxLines: 1,
-                                              ),
-                                              const SizedBox(height: 4),
-                                              if (stat != null)
-                                                Text(
-                                                  '${_formatFileSize(stat.size)} • ${_formatDate(stat.modified)}',
-                                                  style: TextStyle(
-                                                    fontSize: 12,
-                                                    color:
-                                                        theme.colorScheme.onSurface.withOpacity(0.6),
-                                                  ),
-                                                ),
-                                            ],
+                                        Icon(Icons.calendar_today_rounded, size: 14, color: primaryColor),
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          header,
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 13,
+                                            color: primaryColor,
+                                            letterSpacing: 0.2,
                                           ),
                                         ),
-
-                                        // Action icon / Arrow in normal mode
-                                        if (!_isSelectionMode)
-                                          Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              IconButton(
-                                                icon: const Icon(Icons.edit_note_rounded, size: 22),
-                                                tooltip: 'Rename',
-                                                onPressed: () => _showRenameDialog(file),
-                                              ),
-                                              const Icon(
-                                                Icons.chevron_right_rounded,
-                                                color: Colors.grey,
-                                              ),
-                                            ],
+                                        const SizedBox(width: 6),
+                                        Text(
+                                          '(${filesInGroup.length})',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: theme.colorScheme.onSurface.withOpacity(0.5),
                                           ),
+                                        ),
                                       ],
                                     ),
                                   ),
-                                ),
-                              );
 
-                              if (enableAnim) {
-                                return AnimatedOpacity(
-                                  duration: const Duration(milliseconds: 250),
-                                  opacity: 1.0,
-                                  child: cardWidget,
-                                );
-                              }
-                              return cardWidget;
+                                  // PDF Rows in this date group
+                                  ...filesInGroup.map((file) {
+                                    final name = file.uri.pathSegments.last;
+                                    final stat = file.statSync();
+                                    final bool isSelected = _selectedFilePaths.contains(file.path);
+
+                                    return Card(
+                                      key: ValueKey(file.path),
+                                      margin: const EdgeInsets.symmetric(vertical: 4.0),
+                                      elevation: 1,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(14),
+                                        side: isSelected
+                                          ? BorderSide(color: primaryColor, width: 2)
+                                          : BorderSide(color: theme.colorScheme.outline.withOpacity(0.12)),
+                                      ),
+                                      child: InkWell(
+                                        borderRadius: BorderRadius.circular(14),
+                                        onTap: () {
+                                          if (_isSelectionMode) {
+                                            _toggleSelection(file);
+                                          } else {
+                                            // Tapping opens/previews the PDF directly (REDESIGN 7)
+                                            _openPdf(file);
+                                          }
+                                        },
+                                        onLongPress: () {
+                                          if (!_isSelectionMode) {
+                                            setState(() {
+                                              _isSelectionMode = true;
+                                              _selectedFilePaths.add(file.path);
+                                            });
+                                          }
+                                        },
+                                        child: Padding(
+                                          padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 10.0),
+                                          child: Row(
+                                            children: [
+                                              // Selection checkbox OR PDF thumbnail badge
+                                              if (_isSelectionMode)
+                                                Padding(
+                                                  padding: const EdgeInsets.only(right: 8.0),
+                                                  child: Checkbox(
+                                                    value: isSelected,
+                                                    onChanged: (_) => _toggleSelection(file),
+                                                  ),
+                                                )
+                                              else
+                                                Container(
+                                                  padding: const EdgeInsets.all(10),
+                                                  decoration: BoxDecoration(
+                                                    color: Colors.red.shade50,
+                                                    borderRadius: BorderRadius.circular(10),
+                                                    border: Border.all(color: Colors.red.shade100),
+                                                  ),
+                                                  child: const Icon(
+                                                    Icons.picture_as_pdf_rounded,
+                                                    color: Colors.red,
+                                                    size: 26,
+                                                  ),
+                                                ),
+                                              const SizedBox(width: 12),
+
+                                              // File Info: Filename & Date stamp
+                                              Expanded(
+                                                child: Column(
+                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      name,
+                                                      style: const TextStyle(
+                                                        fontWeight: FontWeight.bold,
+                                                        fontSize: 14,
+                                                      ),
+                                                      maxLines: 1,
+                                                      overflow: TextOverflow.ellipsis,
+                                                    ),
+                                                    const SizedBox(height: 3),
+                                                    Text(
+                                                      '${_formatTime(stat.modified)} • ${_formatFileSize(stat.size)}',
+                                                      style: TextStyle(
+                                                        fontSize: 12,
+                                                        color: theme.colorScheme.onSurface.withOpacity(0.6),
+                                                      ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+
+                                              // TWO ACTION BUTTONS (REDESIGN 7): Share and Delete
+                                              if (!_isSelectionMode) ...[
+                                                // 1. Share Button
+                                                IconButton(
+                                                  icon: const Icon(Icons.share_outlined, size: 20),
+                                                  tooltip: 'Share PDF',
+                                                  onPressed: () => _sharePdf(file),
+                                                  visualDensity: VisualDensity.compact,
+                                                ),
+                                                // 2. Delete Button
+                                                IconButton(
+                                                  icon: const Icon(Icons.delete_outline_rounded, size: 20, color: Colors.redAccent),
+                                                  tooltip: 'Delete PDF',
+                                                  onPressed: () => _confirmDeletePdf(file),
+                                                  visualDensity: VisualDensity.compact,
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  }),
+                                ],
+                              );
                             },
                           ),
                         ),
             ),
 
-            // Batch Actions Floating Bottom Bar
+            // Batch Action Bottom Bar
             if (_isSelectionMode && _selectedFilePaths.isNotEmpty)
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
@@ -606,42 +590,27 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                 ),
                 child: Row(
                   children: [
-                    // Batch Delete Button
                     Expanded(
                       child: OutlinedButton.icon(
                         style: OutlinedButton.styleFrom(
                           foregroundColor: Colors.redAccent,
-                          side: const BorderSide(color: Colors.redAccent, width: 1.5),
+                          side: const BorderSide(color: Colors.redAccent),
                           minimumSize: const Size(0, 48),
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
                         ),
                         onPressed: _batchDelete,
                         icon: const Icon(Icons.delete_outline_rounded, size: 20),
-                        label: FittedBox(
-                          child: Text(
-                            '${strings.get('batch_delete')} (${_selectedFilePaths.length})',
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                        ),
+                        label: Text('Delete (${_selectedFilePaths.length})'),
                       ),
                     ),
                     const SizedBox(width: 12),
-
-                    // Batch Export / Share Button
                     Expanded(
                       child: ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(
                           minimumSize: const Size(0, 48),
-                          padding: const EdgeInsets.symmetric(horizontal: 8),
                         ),
-                        onPressed: _batchExport,
+                        onPressed: _batchShare,
                         icon: const Icon(Icons.share_rounded, size: 20),
-                        label: FittedBox(
-                          child: Text(
-                            '${strings.get('batch_export')} (${_selectedFilePaths.length})',
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                        ),
+                        label: Text('Share (${_selectedFilePaths.length})'),
                       ),
                     ),
                   ],
