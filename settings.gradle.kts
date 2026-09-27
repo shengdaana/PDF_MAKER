@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "PDF Maker Pro"
+rootProject.name = "PDF Maker"
 
 include(":app")

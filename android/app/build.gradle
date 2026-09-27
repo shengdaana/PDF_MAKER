@@ -24,7 +24,7 @@ if (flutterVersionName == null) {
 
 
 android {
-    namespace "com.example.pdf_maker_pro"
+    namespace "com.introbird.pdfmakerflutter"
     compileSdkVersion 36
     ndkVersion "28.2.13676358"
 
@@ -42,12 +42,17 @@ android {
     }
 
     defaultConfig {
-        applicationId "com.example.pdf_maker_pro"
+        applicationId "com.introbird.pdfmakerflutter"
         minSdkVersion flutter.minSdkVersion
         targetSdkVersion 35
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
         multiDexEnabled true
+    }
+
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
 
     buildTypes {

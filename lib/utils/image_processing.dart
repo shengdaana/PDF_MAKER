@@ -14,9 +14,6 @@ class ImageProcessingService {
   static img.Image applyDocumentEnhance(img.Image input) =>
       ImageProcessor.applyEnhance(input);
 
-  static img.Image applyFlatten(img.Image input) =>
-      ImageProcessor.applyFlatten(input);
-
   static img.Image cropNormalized(img.Image input, Rect normalizedRect) =>
       ImageProcessor.cropNormalized(input, normalizedRect);
 
@@ -32,4 +29,3 @@ class ImageProcessingService {
         profile: isHdQuality ? PdfCompressionProfile.hdOriginal : PdfCompressionProfile.standard,
       );
 }
-

@@ -9,7 +9,7 @@ enum EnhanceMode {
   bwHighContrast, // Pure high-contrast black/white scan mode
 }
 
-/// 4-point quadrilateral for manual perspective crop & deskew (Fixes 1 & 2)
+/// 4-point quadrilateral for manual perspective crop & deskew (FIX 1)
 class CropQuad {
   final Offset topLeft; // Normalized coordinates in range [0.0 .. 1.0]
   final Offset topRight;
@@ -49,6 +49,19 @@ class CropQuad {
       bottomLeft: bottomLeft ?? this.bottomLeft,
     );
   }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is CropQuad &&
+        other.topLeft == topLeft &&
+        other.topRight == topRight &&
+        other.bottomRight == bottomRight &&
+        other.bottomLeft == bottomLeft;
+  }
+
+  @override
+  int get hashCode => Object.hash(topLeft, topRight, bottomRight, bottomLeft);
 }
 
 class PdfPageItem {
@@ -57,7 +70,6 @@ class PdfPageItem {
   String currentPreviewPath;
   int rotationDegrees;
   EnhanceMode enhanceMode;
-  bool isFlattened;
   CropQuad? cropQuad;
   Rect? normalizedCropRect; // In range [0.0, 1.0] for legacy compatibility
   bool mergedWithNext;
@@ -69,7 +81,6 @@ class PdfPageItem {
     this.rotationDegrees = 0,
     this.enhanceMode = EnhanceMode.none,
     bool isEnhanced = false,
-    this.isFlattened = false,
     this.cropQuad,
     this.normalizedCropRect,
     this.mergedWithNext = false,
@@ -91,7 +102,6 @@ class PdfPageItem {
     int? rotationDegrees,
     EnhanceMode? enhanceMode,
     bool? isEnhanced,
-    bool? isFlattened,
     CropQuad? cropQuad,
     Rect? normalizedCropRect,
     bool? mergedWithNext,
@@ -107,7 +117,6 @@ class PdfPageItem {
       currentPreviewPath: currentPreviewPath ?? this.currentPreviewPath,
       rotationDegrees: rotationDegrees ?? this.rotationDegrees,
       enhanceMode: resolvedEnhance,
-      isFlattened: isFlattened ?? this.isFlattened,
       cropQuad: cropQuad ?? this.cropQuad,
       normalizedCropRect: normalizedCropRect ?? this.normalizedCropRect,
       mergedWithNext: mergedWithNext ?? this.mergedWithNext,

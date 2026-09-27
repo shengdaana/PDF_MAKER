@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:image/image.dart' as img;
 import '../main.dart';
 import '../models/app_settings.dart';
 import '../models/pdf_page_item.dart';
@@ -24,7 +23,6 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
   final ScrollController _scrollController = ScrollController();
   final ImagePicker _picker = ImagePicker();
 
-  bool _flattenAll = false;
   bool _enhanceAll = false;
   bool _searchableOcr = false;
   bool _isLoading = true;
@@ -83,14 +81,12 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                 sourcePath: picked[i].path,
                 currentPreviewPath: picked[i].path,
                 isEnhanced: _enhanceAll,
-                isFlattened: _flattenAll,
               ),
             );
           }
         });
 
-        // Apply active bulk filters to newly added photos if needed
-        if (_enhanceAll || _flattenAll) {
+        if (_enhanceAll) {
           _reprocessAllPreviews();
         }
 
@@ -101,7 +97,7 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
         });
       }
     } catch (e) {
-      debugPrint("Error picking additional photos: $e");
+      debugPrint('Error picking additional photos: $e');
     }
   }
 
@@ -123,6 +119,7 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
   }
 
   void _deletePage(int index) {
+    final strings = AppStateScope.of(context).strings;
     final deletedItem = _pages[index];
     final originalIndex = index;
 
@@ -133,9 +130,9 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Page ${originalIndex + 1} deleted'),
+        content: Text(strings.pageDeleted(originalIndex + 1)),
         action: SnackBarAction(
-          label: 'UNDO',
+          label: strings.get('btn_undo'),
           onPressed: () {
             setState(() {
               _pages.insert(originalIndex, deletedItem);
@@ -145,49 +142,6 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
         duration: const Duration(seconds: 4),
       ),
     );
-  }
-
-  Future<void> _rotatePage(int index) async {
-    final page = _pages[index];
-    final int newRotation = (page.rotationDegrees + 90) % 360;
-
-    setState(() => _isLoading = true);
-    try {
-      final sourceFile = File(page.sourcePath);
-      final raw = await ImageProcessor.loadAndNormalizeExif(sourceFile);
-      if (raw != null) {
-        final processed = ImageProcessor.processPipeline(
-          sourceImage: raw,
-          rotationDegrees: newRotation,
-          cropQuad: page.cropQuad,
-          normalizedCropRect: page.normalizedCropRect,
-          enhanceMode: page.enhanceMode,
-          isFlattened: page.isFlattened,
-        );
-        final newPreview = await ImageProcessor.saveToTempPreviewFile(
-          processed,
-          'rot_${page.id}',
-        );
-        page.rotationDegrees = newRotation;
-        page.currentPreviewPath = newPreview;
-      }
-    } catch (e) {
-      debugPrint("Error rotating page: $e");
-    } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
-    }
-  }
-
-  Future<void> _toggleFlattenAll(bool enabled) async {
-    setState(() {
-      _flattenAll = enabled;
-      for (final page in _pages) {
-        page.isFlattened = enabled;
-      }
-    });
-    await _reprocessAllPreviews();
   }
 
   Future<void> _toggleEnhanceAll(bool enabled) async {
@@ -208,9 +162,8 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
     try {
       for (final page in _pages) {
         if (page.enhanceMode == EnhanceMode.none &&
-            !page.isFlattened &&
             page.rotationDegrees == 0 &&
-            (page.cropQuad == null || page.cropQuad!.isFullFrame) &&
+            page.cropQuad == null &&
             page.normalizedCropRect == null) {
           page.currentPreviewPath = page.sourcePath;
           continue;
@@ -225,7 +178,6 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
             cropQuad: page.cropQuad,
             normalizedCropRect: page.normalizedCropRect,
             enhanceMode: page.enhanceMode,
-            isFlattened: page.isFlattened,
           );
           final preview = await ImageProcessor.saveToTempPreviewFile(
             processed,
@@ -235,7 +187,7 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
         }
       }
     } catch (e) {
-      debugPrint("Error reprocessing previews: $e");
+      debugPrint('Error reprocessing previews: $e');
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
@@ -347,14 +299,17 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
   }
 
   Future<void> _executePdfGeneration(bool isHd) async {
+    final appScope = AppStateScope.of(context);
+    final strings = appScope.strings;
+    final settings = appScope.settings;
+
     setState(() {
       _isGeneratingPdf = true;
       _generationProgress = 0.0;
-      _generationStatus = 'Preparing pages...';
+      _generationStatus = strings.get('status_preparing_pages');
     });
 
     try {
-      final settings = AppStateScope.of(context).settings;
       final result = await PdfService.generatePdf(
         pages: _pages,
         settings: settings,
@@ -380,10 +335,10 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
         );
       }
     } catch (e) {
-      debugPrint("PDF Generation Failed: $e");
+      debugPrint('PDF Generation Failed: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to generate PDF: $e')),
+          SnackBar(content: Text('${strings.get('msg_pdf_gen_failed')}: $e')),
         );
         setState(() => _isGeneratingPdf = false);
       }
@@ -412,7 +367,7 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Top Bulk Action Controls Card (Flatten All, Enhance All, OCR)
+            // Top Bulk Action Controls Card (Enhance All, OCR)
             Card(
               margin: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
               elevation: 1,
@@ -425,39 +380,13 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                         Expanded(
                           child: Row(
                             children: [
-                              Icon(Icons.filter_center_focus_rounded,
+                              Icon(Icons.auto_fix_high_rounded,
                                   size: 18, color: primaryColor),
                               const SizedBox(width: 8),
                               Expanded(
                                 child: Text(
-                                  strings.get('toggle_flatten_all'),
+                                  strings.get('toggle_enhance_all'),
                                   style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Switch(
-                          value: _flattenAll,
-                          onChanged: _isGeneratingPdf ? null : _toggleFlattenAll,
-                          activeColor: primaryColor,
-                        ),
-                      ],
-                    ),
-                    const Divider(height: 4),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Row(
-                            children: [
-                              Icon(Icons.auto_fix_high_rounded,
-                                  size: 18, color: primaryColor),
-                              const SizedBox(width: 8),
-                              const Expanded(
-                                child: Text(
-                                  'Enhance All (Clean B&W Scan)',
-                                  style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
@@ -547,12 +476,12 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                 ),
               ),
 
-            // Overhauled Hero Cards Page List
+            // Hero Cards Page List
             Expanded(
               child: _isLoading
                   ? const Center(child: CircularProgressIndicator())
                   : _pages.isEmpty
-                      ? Center(child: Text(strings.get('no_pdfs_yet')))
+                      ? Center(child: Text(strings.get('no_pdfs_yet'), textAlign: TextAlign.center))
                       : ListView.builder(
                           controller: _scrollController,
                           padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 8.0),
@@ -574,7 +503,7 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                                 onTap: () => _openEditScreen(index),
                                 child: Stack(
                                   children: [
-                                    // 1. Edge-to-Edge Photo as Card Background (Hero Style)
+                                    // 1. Edge-to-Edge Photo as Card Background
                                     SizedBox(
                                       width: double.infinity,
                                       height: 300,
@@ -601,7 +530,7 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                                           borderRadius: BorderRadius.circular(12),
                                         ),
                                         child: Text(
-                                          '${strings.get('page_badge')} ${index + 1} of ${_pages.length}',
+                                          strings.pageOf(index + 1, _pages.length),
                                           style: const TextStyle(
                                             color: Colors.white,
                                             fontWeight: FontWeight.bold,
@@ -621,19 +550,22 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                                         child: InkWell(
                                           customBorder: const CircleBorder(),
                                           onTap: () => _deletePage(index),
-                                          child: const Padding(
-                                            padding: EdgeInsets.all(8.0),
-                                            child: Icon(
-                                              Icons.delete_outline_rounded,
-                                              size: 20,
-                                              color: Colors.white,
+                                          child: Padding(
+                                            padding: const EdgeInsets.all(8.0),
+                                            child: Tooltip(
+                                              message: strings.get('tooltip_delete_page'),
+                                              child: const Icon(
+                                                Icons.delete_outline_rounded,
+                                                size: 20,
+                                                color: Colors.white,
+                                              ),
                                             ),
                                           ),
                                         ),
                                       ),
                                     ),
 
-                                    // 4. Right Side: Semi-Transparent Reorder Arrows Overlay (REDESIGN 5)
+                                    // 4. Right Side: Semi-Transparent Reorder Arrows Overlay
                                     if (!settings.hideReorderArrows)
                                       Positioned(
                                         right: 8,
@@ -651,13 +583,13 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                                               children: [
                                                 IconButton(
                                                   icon: const Icon(Icons.arrow_upward_rounded, size: 22, color: Colors.white),
-                                                  tooltip: 'Move page up',
+                                                  tooltip: strings.get('tooltip_move_up'),
                                                   onPressed: isFirst ? null : () => _movePage(index, index - 1),
                                                 ),
                                                 const SizedBox(height: 4),
                                                 IconButton(
                                                   icon: const Icon(Icons.arrow_downward_rounded, size: 22, color: Colors.white),
-                                                  tooltip: 'Move page down',
+                                                  tooltip: strings.get('tooltip_move_down'),
                                                   onPressed: isLast ? null : () => _movePage(index, index + 1),
                                                 ),
                                               ],
@@ -666,7 +598,7 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                                         ),
                                       ),
 
-                                    // 5. Bottom Overlay: "Tap to edit" bar (REDESIGN 5)
+                                    // 5. Bottom Overlay: "Tap to edit" bar
                                     Positioned(
                                       bottom: 0,
                                       left: 0,
@@ -674,14 +606,14 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                                       child: Container(
                                         padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
                                         color: const Color(0xB3000000),
-                                        child: const Row(
+                                        child: Row(
                                           mainAxisAlignment: MainAxisAlignment.center,
                                           children: [
-                                            Icon(Icons.edit_rounded, size: 16, color: Colors.white),
-                                            SizedBox(width: 8),
+                                            const Icon(Icons.edit_rounded, size: 16, color: Colors.white),
+                                            const SizedBox(width: 8),
                                             Text(
-                                              'Tap to edit',
-                                              style: TextStyle(
+                                              strings.get('tap_to_edit'),
+                                              style: const TextStyle(
                                                 color: Colors.white,
                                                 fontWeight: FontWeight.w600,
                                                 fontSize: 13,
@@ -697,14 +629,43 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                               ),
                             );
 
-                            if (settings.premiumAnimations) {
-                              return AnimatedOpacity(
-                                duration: const Duration(milliseconds: 250),
-                                opacity: 1.0,
-                                child: cardContent,
-                              );
-                            }
-                            return cardContent;
+                            return Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                cardContent,
+                                if (settings.mergePagesBetweenPages && !isLast)
+                                  Padding(
+                                    padding: const EdgeInsets.only(bottom: 4.0),
+                                    child: ActionChip(
+                                      avatar: Icon(
+                                        page.mergedWithNext
+                                            ? Icons.merge_type_rounded
+                                            : Icons.vertical_align_center_rounded,
+                                        size: 16,
+                                        color: page.mergedWithNext ? Colors.white : primaryColor,
+                                      ),
+                                      backgroundColor: page.mergedWithNext
+                                          ? primaryColor
+                                          : theme.cardColor,
+                                      label: Text(
+                                        strings.get('merge_next'),
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600,
+                                          color: page.mergedWithNext
+                                              ? Colors.white
+                                              : theme.colorScheme.onSurface,
+                                        ),
+                                      ),
+                                      onPressed: () {
+                                        setState(() {
+                                          page.mergedWithNext = !page.mergedWithNext;
+                                        });
+                                      },
+                                    ),
+                                  ),
+                              ],
+                            );
                           },
                         ),
             ),

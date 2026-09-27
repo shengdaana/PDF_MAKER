@@ -6,7 +6,7 @@ import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import '../models/pdf_page_item.dart';
 
-/// Compression profiles for PDF generation (FIX 11)
+/// Compression profiles for PDF generation
 enum PdfCompressionProfile {
   /// Standard: Universal default. ~1800px on longest side, 70% JPEG quality per image.
   /// Naturally scales with page count without artificial size ceilings.
@@ -19,13 +19,29 @@ enum PdfCompressionProfile {
   hdOriginal,
 }
 
-/// Comprehensive Image Processing Engine for PDF Maker Pro
+/// Comprehensive Image Processing Engine for PDF Maker
 /// Features:
-/// - True perspective quadrilateral warping (Fixes 1 & 2) using img.copyRectify
-/// - Three-tier Enhance modes (REDESIGN 6): Original Color, Grayscale, B&W High Contrast
-/// - Deterministic reversible processing pipeline (Fix 3)
-/// - Scaled per-image compression (Fix 11)
+/// - Unconditional perspective rectification (`img.copyRectify`) on manual 4-corner crop confirm (FIX 1)
+/// - Non-destructive, live-updating three-tier Enhance modes (FIX 2): Original Color, Grayscale, B&W High Contrast
+/// - Deterministic reversible processing pipeline
+/// - Scaled per-image compression
 class ImageProcessor {
+  /// Rotates a normalized CropQuad clockwise by [degrees] (0, 90, 180, 270).
+  static CropQuad rotateQuad(CropQuad quad, int degrees) {
+    final int steps = ((degrees % 360 + 360) % 360) ~/ 90;
+    CropQuad current = quad;
+    for (int i = 0; i < steps; i++) {
+      Offset rot90CW(Offset p) => Offset((1.0 - p.dy).clamp(0.0, 1.0), p.dx.clamp(0.0, 1.0));
+      current = CropQuad(
+        topLeft: rot90CW(current.bottomLeft),
+        topRight: rot90CW(current.topLeft),
+        bottomRight: rot90CW(current.topRight),
+        bottomLeft: rot90CW(current.bottomRight),
+      );
+    }
+    return current;
+  }
+
   /// Loads an image file, bakes its EXIF orientation into actual pixels, and normalizes it.
   static Future<img.Image?> loadAndNormalizeExif(File file) async {
     final Uint8List bytes = await file.readAsBytes();
@@ -34,7 +50,7 @@ class ImageProcessor {
     return img.bakeOrientation(decoded);
   }
 
-  /// Rotates an image by 90, 180, or 270 degrees.
+  /// Rotates an image by 90, 180, or 270 degrees (returns a new Image).
   static img.Image rotateByDegrees(img.Image input, int degrees) {
     final normalized = (degrees % 360 + 360) % 360;
     switch (normalized) {
@@ -45,39 +61,45 @@ class ImageProcessor {
       case 270:
         return img.copyRotate(input, angle: 270);
       default:
-        return input;
+        return input.clone();
     }
   }
 
-  /// Perspective deskew & crop (Fixes 1 & 2):
-  /// Uses img.copyRectify to warp an arbitrary quadrilateral (topLeft, topRight,
-  /// bottomRight, bottomLeft) into a clean, unwarped, deskewed rectangular image.
-  /// Zero yellow cast, zero hand-written matrix math bugs.
+  /// Perspective deskew & crop (FIX 1):
+  /// Unconditionally warps and straightens the 4-corner quadrilateral placed by the user
+  /// using `img.copyRectify` while computing the true physical Euclidean edge lengths so the
+  /// resulting page preserves the exact aspect ratio of the cropped document.
   static img.Image applyPerspectiveCrop(img.Image input, CropQuad quad) {
-    if (quad.isFullFrame) return input;
-
     final int w = input.width;
     final int h = input.height;
+    if (w <= 2 || h <= 2) return input.clone();
 
-    // Convert normalized quad coords to image pixel points
-    final pTopLeft = img.Point(
-      (quad.topLeft.dx * w).round().clamp(0, w - 1),
-      (quad.topLeft.dy * h).round().clamp(0, h - 1),
-    );
-    final pTopRight = img.Point(
-      (quad.topRight.dx * w).round().clamp(0, w - 1),
-      (quad.topRight.dy * h).round().clamp(0, h - 1),
-    );
-    final pBottomRight = img.Point(
-      (quad.bottomRight.dx * w).round().clamp(0, w - 1),
-      (quad.bottomRight.dy * h).round().clamp(0, h - 1),
-    );
-    final pBottomLeft = img.Point(
-      (quad.bottomLeft.dx * w).round().clamp(0, w - 1),
-      (quad.bottomLeft.dy * h).round().clamp(0, h - 1),
-    );
+    final double tlX = (quad.topLeft.dx * w).clamp(0.0, (w - 1).toDouble());
+    final double tlY = (quad.topLeft.dy * h).clamp(0.0, (h - 1).toDouble());
+    final double trX = (quad.topRight.dx * w).clamp(0.0, (w - 1).toDouble());
+    final double trY = (quad.topRight.dy * h).clamp(0.0, (h - 1).toDouble());
+    final double brX = (quad.bottomRight.dx * w).clamp(0.0, (w - 1).toDouble());
+    final double brY = (quad.bottomRight.dy * h).clamp(0.0, (h - 1).toDouble());
+    final double blX = (quad.bottomLeft.dx * w).clamp(0.0, (w - 1).toDouble());
+    final double blY = (quad.bottomLeft.dy * h).clamp(0.0, (h - 1).toDouble());
 
-    // img.copyRectify takes: topLeft, topRight, bottomLeft, bottomRight
+    // Compute true Euclidean edge lengths for aspect-correct output dimensions
+    final double topEdge = sqrt(pow(trX - tlX, 2) + pow(trY - tlY, 2));
+    final double bottomEdge = sqrt(pow(brX - blX, 2) + pow(brY - blY, 2));
+    final double leftEdge = sqrt(pow(blX - tlX, 2) + pow(blY - tlY, 2));
+    final double rightEdge = sqrt(pow(brX - trX, 2) + pow(brY - trY, 2));
+
+    final int outWidth = max(topEdge, bottomEdge).round().clamp(16, w);
+    final int outHeight = max(leftEdge, rightEdge).round().clamp(16, h);
+
+    final pTopLeft = img.Point(tlX.round(), tlY.round());
+    final pTopRight = img.Point(trX.round(), trY.round());
+    final pBottomRight = img.Point(brX.round(), brY.round());
+    final pBottomLeft = img.Point(blX.round(), blY.round());
+
+    final img.Image targetImage = img.Image(width: outWidth, height: outHeight);
+
+    // img.copyRectify straightens the 4-corner quadrilateral into targetImage
     return img.copyRectify(
       input,
       topLeft: pTopLeft,
@@ -85,6 +107,7 @@ class ImageProcessor {
       bottomLeft: pBottomLeft,
       bottomRight: pBottomRight,
       interpolation: img.Interpolation.linear,
+      toImage: targetImage,
     );
   }
 
@@ -98,128 +121,25 @@ class ImageProcessor {
     return img.copyCrop(input, x: x, y: y, width: w, height: h);
   }
 
-  /// Detects document boundary quadrilateral on a photo.
-  /// Analyzes luminance and edge gradients on downsampled thumbnail.
-  static CropQuad detectDocumentQuad(img.Image input) {
-    try {
-      // Downsample for fast analysis
-      const int sampleDim = 200;
-      final scale = max(input.width, input.height) / sampleDim;
-      final sampleW = (input.width / scale).round().clamp(10, sampleDim);
-      final sampleH = (input.height / scale).round().clamp(10, sampleDim);
-      final sample = img.copyResize(input, width: sampleW, height: sampleH);
-
-      // Compute average luminance and threshold
-      int totalLum = 0;
-      final lums = List<int>.filled(sampleW * sampleH, 0);
-      for (int y = 0; y < sampleH; y++) {
-        for (int x = 0; x < sampleW; x++) {
-          final p = sample.getPixel(x, y);
-          final l = (0.299 * p.r + 0.587 * p.g + 0.114 * p.b).round();
-          lums[y * sampleW + x] = l;
-          totalLum += l;
-        }
-      }
-      final avgLum = totalLum ~/ (sampleW * sampleH);
-      final thresh = max(avgLum, 95);
-
-      // Find extreme corners of bright document area
-      int minSum = 9999999, maxSum = -1;
-      int minDiff = 9999999, maxDiff = -9999999;
-      Point<int> tl = const Point(0, 0);
-      Point<int> br = Point(sampleW - 1, sampleH - 1);
-      Point<int> tr = Point(sampleW - 1, 0);
-      Point<int> bl = Point(0, sampleH - 1);
-
-      int brightCount = 0;
-      for (int y = 0; y < sampleH; y++) {
-        for (int x = 0; x < sampleW; x++) {
-          if (lums[y * sampleW + x] >= thresh) {
-            brightCount++;
-            final sum = x + y;
-            final diff = x - y;
-
-            if (sum < minSum) {
-              minSum = sum;
-              tl = Point(x, y);
-            }
-            if (sum > maxSum) {
-              maxSum = sum;
-              br = Point(x, y);
-            }
-            if (diff > maxDiff) {
-              maxDiff = diff;
-              tr = Point(x, y);
-            }
-            if (diff < minDiff) {
-              minDiff = diff;
-              bl = Point(x, y);
-            }
-          }
-        }
-      }
-
-      // If document area is too small or covers nearly whole frame, use comfortable 5% inset
-      final minArea = (sampleW * sampleH) * 0.15;
-      if (brightCount < minArea) {
-        return const CropQuad(
-          topLeft: Offset(0.05, 0.05),
-          topRight: Offset(0.95, 0.05),
-          bottomRight: Offset(0.95, 0.95),
-          bottomLeft: Offset(0.05, 0.95),
-        );
-      }
-
-      return CropQuad(
-        topLeft: Offset(
-          (tl.x / sampleW).clamp(0.02, 0.98),
-          (tl.y / sampleH).clamp(0.02, 0.98),
-        ),
-        topRight: Offset(
-          (tr.x / sampleW).clamp(0.02, 0.98),
-          (tr.y / sampleH).clamp(0.02, 0.98),
-        ),
-        bottomRight: Offset(
-          (br.x / sampleW).clamp(0.02, 0.98),
-          (br.y / sampleH).clamp(0.02, 0.98),
-        ),
-        bottomLeft: Offset(
-          (bl.x / sampleW).clamp(0.02, 0.98),
-          (bl.y / sampleH).clamp(0.02, 0.98),
-        ),
-      );
-    } catch (_) {
-      return const CropQuad(
-        topLeft: Offset(0.05, 0.05),
-        topRight: Offset(0.95, 0.05),
-        bottomRight: Offset(0.95, 0.95),
-        bottomLeft: Offset(0.05, 0.95),
-      );
-    }
-  }
-
-  /// Automatic document deskew & perspective correction (Fix 1).
-  /// Replaces the broken hand-written color-cast transform with real perspective rectification.
-  static img.Image applyAutoFlatten(img.Image input) {
-    final quad = detectDocumentQuad(input);
-    return applyPerspectiveCrop(input, quad);
-  }
-
-  /// Backward-compatible alias for applyAutoFlatten
-  static img.Image applyFlatten(img.Image input) => applyAutoFlatten(input);
-
-  /// ENHANCE FILTER MODES (REDESIGN 6):
-  /// 1. Original Color (Default): Sharpness and contrast boost only, colors preserved as-is.
-  /// 2. Grayscale: Desaturated with smooth tonal shading.
-  /// 3. B&W High Contrast: High-contrast thresholded black & white mode.
+  /// ENHANCE FILTER MODES (FIX 2):
+  /// Always clones [input] before applying `package:image` filters because `img.grayscale`,
+  /// `img.contrast`, `img.adjustColor`, and `img.convolution` mutate pixel buffers in-place.
+  /// Cloning guarantees non-destructive live preview updates when switching between modes!
   static img.Image applyEnhanceMode(img.Image input, EnhanceMode mode) {
+    if (mode == EnhanceMode.none) {
+      return input.clone();
+    }
+
+    // Clone input so we NEVER mutate cached source/preview images in-place
+    final img.Image working = input.clone();
+
     switch (mode) {
       case EnhanceMode.none:
-        return input;
+        return working;
 
       case EnhanceMode.originalColor:
         // 1. Contrast boost preserving all color channels
-        final img.Image contrasted = img.contrast(input, contrast: 118);
+        final img.Image contrasted = img.contrast(working, contrast: 118);
         // 2. Subtle brightness lift for crisp text on paper
         final img.Image brightened = img.adjustColor(
           contrasted,
@@ -240,7 +160,7 @@ class ImageProcessor {
 
       case EnhanceMode.grayscale:
         // 1. Convert to true grayscale
-        final img.Image gray = img.grayscale(input);
+        final img.Image gray = img.grayscale(working);
         // 2. Smooth tonal contrast (preserves shading, photos, pencil tones)
         final img.Image contrasted = img.contrast(gray, contrast: 128);
         // 3. Whitens background paper slightly
@@ -263,7 +183,7 @@ class ImageProcessor {
 
       case EnhanceMode.bwHighContrast:
         // 1. True grayscale
-        final img.Image gray = img.grayscale(input);
+        final img.Image gray = img.grayscale(working);
         // 2. Strong contrast stretch
         final img.Image contrasted = img.contrast(gray, contrast: 155);
         // 3. Whitens grey paper noise, darkens text
@@ -292,8 +212,22 @@ class ImageProcessor {
   static img.Image applyEnhance(img.Image input, {EnhanceMode mode = EnhanceMode.originalColor}) =>
       applyEnhanceMode(input, mode);
 
-  /// Full deterministic processing pipeline (Fix 3):
+  /// Downsamples an image to [maxDimension] on its longest side for fast interactive UI previews.
+  static img.Image downsampleForPreview(img.Image input, {int maxDimension = 1000}) {
+    if (input.width <= maxDimension && input.height <= maxDimension) {
+      return input.clone();
+    }
+    if (input.width >= input.height) {
+      return img.copyResize(input, width: maxDimension, interpolation: img.Interpolation.linear);
+    } else {
+      return img.copyResize(input, height: maxDimension, interpolation: img.Interpolation.linear);
+    }
+  }
+
+  /// Full deterministic processing pipeline (FIX 1 & FIX 2):
   /// Always transforms directly from clean sourceImage so changes are 100% reversible.
+  /// Whenever [cropQuad] is provided (confirmed in the crop tool), perspective-rectification
+  /// (`applyPerspectiveCrop`) is unconditionally applied using those 4 corner points.
   static img.Image processPipeline({
     required img.Image sourceImage,
     required int rotationDegrees,
@@ -301,26 +235,23 @@ class ImageProcessor {
     Rect? normalizedCropRect,
     EnhanceMode enhanceMode = EnhanceMode.none,
     bool isEnhanced = false,
-    bool isFlattened = false,
   }) {
-    img.Image result = sourceImage;
+    img.Image result = sourceImage.clone();
 
     // 1. Rotation
     if (rotationDegrees % 360 != 0) {
       result = rotateByDegrees(result, rotationDegrees);
     }
 
-    // 2. Perspective Crop / Deskew (Fixes 1 & 2)
-    if (cropQuad != null && !cropQuad.isFullFrame) {
+    // 2. Unconditional Perspective Crop & Straightening on confirmed cropQuad (FIX 1)
+    if (cropQuad != null) {
       result = applyPerspectiveCrop(result, cropQuad);
     } else if (normalizedCropRect != null &&
         normalizedCropRect != const Rect.fromLTWH(0.0, 0.0, 1.0, 1.0)) {
       result = cropNormalized(result, normalizedCropRect);
-    } else if (isFlattened) {
-      result = applyAutoFlatten(result);
     }
 
-    // 3. Enhance Filter Modes (REDESIGN 6)
+    // 3. Enhance Filter Modes (FIX 2)
     final effectiveMode = enhanceMode != EnhanceMode.none
         ? enhanceMode
         : (isEnhanced ? EnhanceMode.originalColor : EnhanceMode.none);
@@ -336,21 +267,20 @@ class ImageProcessor {
   static Future<String> saveToTempPreviewFile(img.Image image, String prefix) async {
     final tempDir = await getTemporaryDirectory();
     final String path = '${tempDir.path}/${prefix}_${DateTime.now().microsecondsSinceEpoch}.jpg';
-    final Uint8List jpgBytes = Uint8List.fromList(img.encodeJpg(image, quality: 82));
+    final img.Image previewSized = downsampleForPreview(image, maxDimension: 1200);
+    final Uint8List jpgBytes = Uint8List.fromList(img.encodeJpg(previewSized, quality: 84));
     await File(path).writeAsBytes(jpgBytes);
     return path;
   }
 
-  /// Downsamples and compresses an image for PDF embedding (FIX 11).
+  /// Downsamples and compresses an image for PDF embedding.
   /// Standard Quality: ~1800px on longest side, 70% JPEG quality per image.
-  /// Scales with page count without forcing artificial total document limits.
   static Uint8List compressForPdf(
     img.Image input, {
     PdfCompressionProfile profile = PdfCompressionProfile.standard,
   }) {
     switch (profile) {
       case PdfCompressionProfile.standard:
-        // FIX 11: 1800px max dimension, 70% quality per image
         const int maxDim = 1800;
         img.Image resized = input;
         if (input.width > maxDim || input.height > maxDim) {

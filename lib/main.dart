@@ -1,18 +1,15 @@
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'models/app_settings.dart';
 import 'screens/home_screen.dart';
 import 'screens/arrange_screen.dart';
-import 'screens/edit_screen.dart';
 import 'screens/pdf_library_screen.dart';
-import 'screens/success_screen.dart';
 import 'screens/settings_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final settings = await AppSettings.load();
-  runApp(PdfMakerProApp(initialSettings: settings));
+  runApp(PdfMakerApp(initialSettings: settings));
 }
 
 class AppStateScope extends InheritedWidget {
@@ -33,26 +30,23 @@ class AppStateScope extends InheritedWidget {
   }
 
   AppStrings get strings => AppStrings(settings.language);
-  bool get premiumAnimations => settings.premiumAnimations;
-  Duration get animDuration =>
-      settings.premiumAnimations ? const Duration(milliseconds: 300) : Duration.zero;
 
   @override
   bool updateShouldNotify(AppStateScope oldWidget) {
-    return settings != oldWidget.settings;
+    return true;
   }
 }
 
-class PdfMakerProApp extends StatefulWidget {
+class PdfMakerApp extends StatefulWidget {
   final AppSettings initialSettings;
 
-  const PdfMakerProApp({super.key, required this.initialSettings});
+  const PdfMakerApp({super.key, required this.initialSettings});
 
   @override
-  State<PdfMakerProApp> createState() => _PdfMakerProAppState();
+  State<PdfMakerApp> createState() => _PdfMakerAppState();
 }
 
-class _PdfMakerProAppState extends State<PdfMakerProApp> {
+class _PdfMakerAppState extends State<PdfMakerApp> {
   late AppSettings _settings;
 
   @override
@@ -203,20 +197,13 @@ class _PdfMakerProAppState extends State<PdfMakerProApp> {
           ),
         ),
       ),
-      pageTransitionsTheme: _settings.premiumAnimations
-          ? const PageTransitionsTheme(
-              builders: {
-                TargetPlatform.android: FadeUpwardsPageTransitionsBuilder(),
-                TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
-              },
-            )
-          : const PageTransitionsTheme(
-              builders: {
-                // Instant zero-cost transition for low-spec phones
-                TargetPlatform.android: _NoAnimationPageTransitionsBuilder(),
-                TargetPlatform.iOS: _NoAnimationPageTransitionsBuilder(),
-              },
-            ),
+      // Simple, lightweight page transitions everywhere by default (FIX 5)
+      pageTransitionsTheme: const PageTransitionsTheme(
+        builders: {
+          TargetPlatform.android: FadeUpwardsPageTransitionsBuilder(),
+          TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+        },
+      ),
     );
   }
 
@@ -226,7 +213,7 @@ class _PdfMakerProAppState extends State<PdfMakerProApp> {
       settings: _settings,
       onSettingsChanged: _updateSettings,
       child: MaterialApp(
-        title: 'PDF Maker Pro',
+        title: 'PDF Maker',
         debugShowCheckedModeBanner: false,
         theme: _buildTheme(_settings.themePalette, isDark: false),
         darkTheme: _buildTheme(_settings.themePalette, isDark: true),
@@ -240,20 +227,5 @@ class _PdfMakerProAppState extends State<PdfMakerProApp> {
         },
       ),
     );
-  }
-}
-
-class _NoAnimationPageTransitionsBuilder extends PageTransitionsBuilder {
-  const _NoAnimationPageTransitionsBuilder();
-
-  @override
-  Widget buildTransitions<T>(
-    PageRoute<T> route,
-    BuildContext context,
-    Animation<double> animation,
-    Animation<double> secondaryAnimation,
-    Widget child,
-  ) {
-    return child; // Instant render without GPU-heavy tween animations
   }
 }

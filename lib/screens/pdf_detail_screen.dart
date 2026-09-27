@@ -1,10 +1,10 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:open_filex/open_filex.dart';
 import 'package:printing/printing.dart';
 import 'package:share_plus/share_plus.dart';
 import '../main.dart';
+import '../services/pdf_service.dart';
 import 'pdf_editor_screen.dart';
 
 class PdfDetailScreen extends StatefulWidget {
@@ -37,7 +37,6 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
     try {
       if (await _currentFile.exists()) {
         final Uint8List pdfBytes = await _currentFile.readAsBytes();
-        // Rasterize first 15 pages for snappy performance
         int count = 0;
         await for (final page in Printing.raster(pdfBytes, dpi: 100)) {
           final pngBytes = await page.toPng();
@@ -47,7 +46,7 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
         }
       }
     } catch (e) {
-      debugPrint("Error loading PDF page previews: $e");
+      debugPrint('Error loading PDF page previews: $e');
     } finally {
       if (mounted) {
         setState(() {
@@ -59,19 +58,15 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
   }
 
   void _sharePdf() {
+    final strings = AppStateScope.of(context).strings;
     Share.shareXFiles(
       [XFile(_currentFile.path)],
-      text: 'PDF: $_currentFileName',
+      text: '${strings.get('share_pdf_text')}: $_currentFileName',
     );
   }
 
-  void _openInExternalViewer() async {
-    final result = await OpenFilex.open(_currentFile.path);
-    if (result.type != ResultType.done && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not open PDF viewer: ${result.message}')),
-      );
-    }
+  void _openInExternalViewer() {
+    PdfService.openPdfFile(context, _currentFile);
   }
 
   void _deletePdf() {
@@ -98,11 +93,11 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
                 try {
                   await _currentFile.delete();
                   if (mounted) {
-                    Navigator.pop(ctx); // close dialog
-                    Navigator.pop(context, true); // pop back to list with deleted flag
+                    Navigator.pop(ctx);
+                    Navigator.pop(context, true);
                   }
                 } catch (e) {
-                  debugPrint("Error deleting PDF: $e");
+                  debugPrint('Error deleting PDF: $e');
                 }
               },
               child: Text(strings.get('delete_btn')),
@@ -147,14 +142,14 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
             children: [
               const Icon(Icons.edit_note_rounded, size: 28),
               const SizedBox(width: 10),
-              Text(strings.get('btn_rename_pdf')),
+              Expanded(child: Text(strings.get('btn_rename_pdf'))),
             ],
           ),
           content: TextField(
             controller: controller,
             autofocus: true,
             decoration: InputDecoration(
-              labelText: 'Document Name',
+              labelText: strings.get('doc_name_label'),
               suffixText: '.pdf',
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
               filled: true,
@@ -171,16 +166,16 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
                 if (raw.isEmpty) return;
 
                 String sanitized = raw.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
-                if (sanitized.isEmpty) sanitized = "document";
+                if (sanitized.isEmpty) sanitized = 'document';
 
                 final parentDir = _currentFile.parent;
-                String finalName = "$sanitized.pdf";
-                File targetFile = File("${parentDir.path}/$finalName");
+                String finalName = '$sanitized.pdf';
+                File targetFile = File('${parentDir.path}/$finalName');
 
                 int counter = 1;
                 while (await targetFile.exists() && targetFile.path != _currentFile.path) {
-                  finalName = "$sanitized($counter).pdf";
-                  targetFile = File("${parentDir.path}/$finalName");
+                  finalName = '$sanitized($counter).pdf';
+                  targetFile = File('${parentDir.path}/$finalName');
                   counter++;
                 }
 
@@ -198,11 +193,11 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
                   if (mounted) {
                     Navigator.pop(ctx);
                     ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Renamed to $finalName')),
+                      SnackBar(content: Text('${strings.get('msg_renamed_to')} $finalName')),
                     );
                   }
                 } catch (e) {
-                  debugPrint("Error renaming: $e");
+                  debugPrint('Error renaming: $e');
                 }
               },
               child: Text(strings.get('btn_confirm')),
@@ -244,12 +239,12 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.open_in_new_rounded),
-            tooltip: 'Open in system viewer',
+            tooltip: strings.get('tooltip_open_external'),
             onPressed: _openInExternalViewer,
           ),
           IconButton(
             icon: const Icon(Icons.edit_note_rounded),
-            tooltip: 'Rename',
+            tooltip: strings.get('btn_rename_pdf'),
             onPressed: _showRenameDialog,
           ),
         ],
@@ -313,13 +308,13 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
             // Page Previews Grid / Flip View
             Expanded(
               child: _isLoadingPreviews
-                  ? const Center(
+                  ? Center(
                       child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
-                          CircularProgressIndicator(),
-                          SizedBox(height: 12),
-                          Text('Rendering page previews...'),
+                          const CircularProgressIndicator(),
+                          const SizedBox(height: 12),
+                          Text(strings.get('rendering_previews')),
                         ],
                       ),
                     )
@@ -331,7 +326,7 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
                               Icon(Icons.description_outlined,
                                   size: 64, color: primaryColor.withOpacity(0.4)),
                               const SizedBox(height: 12),
-                              const Text('Tap "View in System Viewer" to open this document'),
+                              Text(strings.get('tap_open_viewer')),
                             ],
                           ),
                         )
@@ -370,7 +365,7 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
                                           borderRadius: BorderRadius.circular(8),
                                         ),
                                         child: Text(
-                                          'Page ${index + 1} of ${_pagePreviews.length}',
+                                          strings.pageOf(index + 1, _pagePreviews.length),
                                           style: const TextStyle(
                                             color: Colors.white,
                                             fontSize: 11,
@@ -402,7 +397,6 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
               ),
               child: Row(
                 children: [
-                  // 1. Share Button
                   Expanded(
                     child: OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
@@ -421,7 +415,6 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
                   ),
                   const SizedBox(width: 8),
 
-                  // 2. Delete Button
                   Expanded(
                     child: OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
@@ -442,7 +435,6 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
                   ),
                   const SizedBox(width: 8),
 
-                  // 3. Edit PDF Button (Prominent Primary Button)
                   Expanded(
                     flex: 2,
                     child: ElevatedButton.icon(

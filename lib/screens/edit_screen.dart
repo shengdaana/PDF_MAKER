@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 import '../main.dart';
 import '../models/pdf_page_item.dart';
-import '../utils/image_processing.dart';
+import '../utils/image_processor.dart';
 import '../views/crop_overlay_widget.dart';
 
 class EditScreen extends StatefulWidget {
@@ -18,24 +18,23 @@ class EditScreen extends StatefulWidget {
 }
 
 class _EditScreenState extends State<EditScreen> {
-  // Pending stacked edits state (Fix 3: deterministic & completely reversible)
   late int _pendingRotation;
   late EnhanceMode _pendingEnhanceMode;
-  late bool _pendingFlattened;
   CropQuad _pendingCropQuad = const CropQuad();
 
   bool _isProcessing = true;
   img.Image? _normalizedSourceImage;
+  img.Image? _basePreviewImage;
   Uint8List? _previewImageBytes;
   int _previewWidth = 1;
   int _previewHeight = 1;
+  int _previewVersion = 0;
 
   @override
   void initState() {
     super.initState();
     _pendingRotation = widget.pageItem.rotationDegrees;
     _pendingEnhanceMode = widget.pageItem.enhanceMode;
-    _pendingFlattened = widget.pageItem.isFlattened;
 
     if (widget.pageItem.cropQuad != null) {
       _pendingCropQuad = widget.pageItem.cropQuad!;
@@ -47,6 +46,8 @@ class _EditScreenState extends State<EditScreen> {
         bottomRight: Offset(r.right, r.bottom),
         bottomLeft: Offset(r.left, r.bottom),
       );
+    } else {
+      _pendingCropQuad = const CropQuad();
     }
 
     _loadAndNormalize();
@@ -58,15 +59,14 @@ class _EditScreenState extends State<EditScreen> {
       final file = File(widget.pageItem.sourcePath);
       final normalized = await ImageProcessor.loadAndNormalizeExif(file);
       _normalizedSourceImage = normalized;
-
-      // If no custom crop was set yet, auto-detect document quad (Fix 1 & 2)
-      if (widget.pageItem.cropQuad == null && normalized != null) {
-        _pendingCropQuad = ImageProcessor.detectDocumentQuad(normalized);
+      if (normalized != null) {
+        // Cache a clean, downsampled base image for instantaneous, non-destructive live filter previews (FIX 2)
+        _basePreviewImage = ImageProcessor.downsampleForPreview(normalized, maxDimension: 1000);
       }
 
       await _renderLivePreview();
     } catch (e) {
-      debugPrint("Error loading image for editing: $e");
+      debugPrint('Error loading image for editing: $e');
     } finally {
       if (mounted) {
         setState(() => _isProcessing = false);
@@ -74,39 +74,32 @@ class _EditScreenState extends State<EditScreen> {
     }
   }
 
-  /// Always renders preview from the clean original normalizedSourceImage (Fix 3)
+  /// Immediately re-renders the on-screen preview from a fresh clone of [_basePreviewImage]
+  /// whenever rotation or Enhance filter mode changes (FIX 2).
   Future<void> _renderLivePreview() async {
-    if (_normalizedSourceImage == null) return;
+    final img.Image? sourceForPreview = _basePreviewImage ?? _normalizedSourceImage;
+    if (sourceForPreview == null) return;
 
-    img.Image working = _normalizedSourceImage!;
+    // Always start from a fresh clone so in-place image operations never corrupt the base image
+    img.Image working = sourceForPreview.clone();
 
     // 1. Apply rotation
     if (_pendingRotation % 360 != 0) {
       working = ImageProcessor.rotateByDegrees(working, _pendingRotation);
     }
 
-    // 2. Apply Enhance mode (REDESIGN 6)
+    // 2. Apply selected Enhance mode (Original Color / Grayscale / B&W High Contrast)
     if (_pendingEnhanceMode != EnhanceMode.none) {
       working = ImageProcessor.applyEnhanceMode(working, _pendingEnhanceMode);
     }
 
-    // Downsample preview for snappy UI rendering
-    const int maxDim = 1000;
-    img.Image display = working;
-    if (working.width > maxDim || working.height > maxDim) {
-      if (working.width >= working.height) {
-        display = img.copyResize(working, width: maxDim, interpolation: img.Interpolation.linear);
-      } else {
-        display = img.copyResize(working, height: maxDim, interpolation: img.Interpolation.linear);
-      }
-    }
-
-    final previewBytes = Uint8List.fromList(img.encodeJpg(display, quality: 82));
+    final previewBytes = Uint8List.fromList(img.encodeJpg(working, quality: 85));
     if (mounted) {
       setState(() {
         _previewImageBytes = previewBytes;
-        _previewWidth = display.width;
-        _previewHeight = display.height;
+        _previewWidth = working.width;
+        _previewHeight = working.height;
+        _previewVersion++;
       });
     }
   }
@@ -114,34 +107,27 @@ class _EditScreenState extends State<EditScreen> {
   void _rotate90() {
     setState(() {
       _pendingRotation = (_pendingRotation + 90) % 360;
-      // Reset crop quad to full frame on rotation to prevent aspect mismatch
-      _pendingCropQuad = CropQuad.full;
+      _pendingCropQuad = ImageProcessor.rotateQuad(_pendingCropQuad, 90);
     });
     _renderLivePreview();
-  }
-
-  void _autoDetectFlatten() {
-    if (_normalizedSourceImage == null) return;
-    setState(() {
-      _pendingFlattened = true;
-      _pendingCropQuad = ImageProcessor.detectDocumentQuad(_normalizedSourceImage!);
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Document corners auto-detected'),
-        duration: Duration(seconds: 2),
-      ),
-    );
   }
 
   void _resetCrop() {
     setState(() {
       _pendingCropQuad = CropQuad.full;
-      _pendingFlattened = false;
     });
   }
 
+  void _selectEnhanceMode(EnhanceMode mode) {
+    setState(() {
+      _pendingEnhanceMode = mode;
+    });
+    _renderLivePreview();
+  }
+
   void _showEnhanceModeSelector() {
+    final strings = AppStateScope.of(context).strings;
+
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -155,61 +141,66 @@ class _EditScreenState extends State<EditScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text(
-                  'Enhance Filter Mode',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                Text(
+                  strings.get('enhance_sheet_title'),
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 14),
                 ListTile(
                   leading: const Icon(Icons.palette_rounded, color: Colors.indigo),
-                  title: const Text('Original Color (Default)', style: TextStyle(fontWeight: FontWeight.bold)),
-                  subtitle: const Text('Boosts sharpness and contrast, preserves colors as-is'),
+                  title: Text(
+                    strings.get('enhance_mode_color_title'),
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text(strings.get('enhance_mode_color_desc')),
                   trailing: _pendingEnhanceMode == EnhanceMode.originalColor
                       ? const Icon(Icons.check_circle_rounded, color: Colors.indigo)
                       : null,
                   onTap: () {
                     Navigator.pop(ctx);
-                    setState(() => _pendingEnhanceMode = EnhanceMode.originalColor);
-                    _renderLivePreview();
+                    _selectEnhanceMode(EnhanceMode.originalColor);
                   },
                 ),
                 ListTile(
                   leading: const Icon(Icons.tonality_rounded, color: Colors.blueGrey),
-                  title: const Text('Grayscale', style: TextStyle(fontWeight: FontWeight.bold)),
-                  subtitle: const Text('Desaturated with smooth tonal shading (photos, signatures)'),
+                  title: Text(
+                    strings.get('enhance_mode_gray_title'),
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text(strings.get('enhance_mode_gray_desc')),
                   trailing: _pendingEnhanceMode == EnhanceMode.grayscale
                       ? const Icon(Icons.check_circle_rounded, color: Colors.indigo)
                       : null,
                   onTap: () {
                     Navigator.pop(ctx);
-                    setState(() => _pendingEnhanceMode = EnhanceMode.grayscale);
-                    _renderLivePreview();
+                    _selectEnhanceMode(EnhanceMode.grayscale);
                   },
                 ),
                 ListTile(
                   leading: const Icon(Icons.contrast_rounded, color: Colors.black87),
-                  title: const Text('B&W High Contrast', style: TextStyle(fontWeight: FontWeight.bold)),
-                  subtitle: const Text('Clean black & white scan mode for faded notes'),
+                  title: Text(
+                    strings.get('enhance_mode_bw_title'),
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  subtitle: Text(strings.get('enhance_mode_bw_desc')),
                   trailing: _pendingEnhanceMode == EnhanceMode.bwHighContrast
                       ? const Icon(Icons.check_circle_rounded, color: Colors.indigo)
                       : null,
                   onTap: () {
                     Navigator.pop(ctx);
-                    setState(() => _pendingEnhanceMode = EnhanceMode.bwHighContrast);
-                    _renderLivePreview();
+                    _selectEnhanceMode(EnhanceMode.bwHighContrast);
                   },
                 ),
                 ListTile(
                   leading: const Icon(Icons.close_rounded, color: Colors.grey),
-                  title: const Text('Filter Off'),
-                  subtitle: const Text('Revert to unaltered camera image'),
+                  title: Text(strings.get('enhance_mode_off_title')),
+                  subtitle: Text(strings.get('enhance_mode_off_desc')),
                   trailing: _pendingEnhanceMode == EnhanceMode.none
                       ? const Icon(Icons.check_circle_rounded, color: Colors.indigo)
                       : null,
                   onTap: () {
                     Navigator.pop(ctx);
-                    setState(() => _pendingEnhanceMode = EnhanceMode.none);
-                    _renderLivePreview();
+                    _selectEnhanceMode(EnhanceMode.none);
                   },
                 ),
               ],
@@ -229,17 +220,15 @@ class _EditScreenState extends State<EditScreen> {
     setState(() => _isProcessing = true);
 
     try {
-      // FIX 2: When user confirms, automatically apply perspective-correction logic
-      // to straighten the resulting crop using the user's 4 corner points
-      img.Image result = ImageProcessor.processPipeline(
+      // FIX 1: Unconditionally apply perspective-rectification (`img.copyRectify`)
+      // using the user's 4 corner points in `_pendingCropQuad`.
+      final img.Image result = ImageProcessor.processPipeline(
         sourceImage: _normalizedSourceImage!,
         rotationDegrees: _pendingRotation,
         cropQuad: _pendingCropQuad,
         enhanceMode: _pendingEnhanceMode,
-        isFlattened: _pendingFlattened,
       );
 
-      // Save to temporary preview file for fast UI rendering
       final newPreviewPath = await ImageProcessor.saveToTempPreviewFile(
         result,
         'page_${widget.pageItem.id}',
@@ -249,7 +238,6 @@ class _EditScreenState extends State<EditScreen> {
         currentPreviewPath: newPreviewPath,
         rotationDegrees: _pendingRotation,
         enhanceMode: _pendingEnhanceMode,
-        isFlattened: _pendingFlattened || !_pendingCropQuad.isFullFrame,
         cropQuad: _pendingCropQuad,
       );
 
@@ -257,7 +245,7 @@ class _EditScreenState extends State<EditScreen> {
         Navigator.pop(context, updatedItem);
       }
     } catch (e) {
-      debugPrint("Error confirming edits: $e");
+      debugPrint('Error confirming edits: $e');
       if (mounted) {
         setState(() => _isProcessing = false);
       }
@@ -275,13 +263,14 @@ class _EditScreenState extends State<EditScreen> {
       appBar: AppBar(
         leading: IconButton(
           icon: const Icon(Icons.close_rounded, size: 26),
+          tooltip: strings.get('btn_discard'),
           onPressed: () => Navigator.pop(context),
         ),
         title: Text(strings.get('btn_crop_rotate')),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Reset Crop to Full Frame',
+            tooltip: strings.get('tooltip_reset_crop'),
             onPressed: _resetCrop,
           ),
           Padding(
@@ -311,18 +300,18 @@ class _EditScreenState extends State<EditScreen> {
                   child: _isProcessing
                       ? const CircularProgressIndicator(color: Colors.white)
                       : (_previewImageBytes == null)
-                          ? const Text('Could not load image', style: TextStyle(color: Colors.white))
+                          ? Text(
+                              strings.get('msg_could_not_load_image'),
+                              style: const TextStyle(color: Colors.white),
+                            )
                           : LayoutBuilder(
                               builder: (context, constraints) {
-                                // Fix 4: Calculate precise imageDisplayRect with generous padding
-                                // so corner handles sitting at edges are NEVER clipped or cut off!
                                 final double containerW = constraints.maxWidth;
                                 final double containerH = constraints.maxHeight;
 
                                 final double imgAspect = _previewWidth / _previewHeight;
-                                final double containerAspect = containerW / containerH;
 
-                                // Provide 36dp margin so handles (radius 16dp) stay well inside viewport
+                                // Provide 36dp margin so corner handles stay well inside viewport
                                 const double margin = 36.0;
                                 final double availW = max(50.0, containerW - margin * 2);
                                 final double availH = max(50.0, containerH - margin * 2);
@@ -342,7 +331,7 @@ class _EditScreenState extends State<EditScreen> {
 
                                 return Stack(
                                   children: [
-                                    // 1. Positioned Image
+                                    // 1. Live-updating Positioned Image (FIX 2)
                                     Positioned(
                                       left: dispL,
                                       top: dispT,
@@ -350,11 +339,15 @@ class _EditScreenState extends State<EditScreen> {
                                       height: dispH,
                                       child: Image.memory(
                                         _previewImageBytes!,
+                                        key: ValueKey(
+                                          'preview_${_pendingEnhanceMode.name}_${_pendingRotation}_$_previewVersion',
+                                        ),
                                         fit: BoxFit.fill,
+                                        gaplessPlayback: true,
                                       ),
                                     ),
 
-                                    // 2. Unclipped 4-corner perspective crop overlay (Fixes 1, 2, 4)
+                                    // 2. Unclipped 4-corner perspective crop overlay with magnifying loupe
                                     Positioned.fill(
                                       child: CropOverlayWidget(
                                         cropQuad: _pendingCropQuad,
@@ -377,22 +370,25 @@ class _EditScreenState extends State<EditScreen> {
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
               color: Colors.black,
-              child: const Row(
+              child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(Icons.touch_app_rounded, size: 16, color: Colors.white70),
-                  SizedBox(width: 8),
-                  Text(
-                    'Drag 4 corners to straighten document automatically',
-                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  const Icon(Icons.touch_app_rounded, size: 16, color: Colors.white70),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      strings.get('crop_hint_bar'),
+                      style: const TextStyle(color: Colors.white70, fontSize: 12),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ],
               ),
             ),
 
-            // Bottom Action Bar with Flexible constraints
+            // Bottom Action Bar: Rotate 90° and Enhance Modes (FIX 1: Auto Deskew removed)
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 10.0),
+              padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 10.0),
               decoration: BoxDecoration(
                 color: theme.cardColor,
                 boxShadow: [
@@ -409,7 +405,7 @@ class _EditScreenState extends State<EditScreen> {
                   Expanded(
                     child: OutlinedButton.icon(
                       style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 12),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
                         minimumSize: const Size(0, 48),
                       ),
                       onPressed: _isProcessing ? null : _rotate90,
@@ -418,14 +414,14 @@ class _EditScreenState extends State<EditScreen> {
                         fit: BoxFit.scaleDown,
                         child: Text(
                           strings.get('btn_rotate_90'),
-                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
                         ),
                       ),
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 12),
 
-                  // 2. Enhance Modes (REDESIGN 6)
+                  // 2. Enhance Modes (Original Color / Grayscale / B&W High Contrast)
                   Expanded(
                     child: ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
@@ -437,7 +433,7 @@ class _EditScreenState extends State<EditScreen> {
                             : theme.colorScheme.onSurface,
                         side: BorderSide(color: primaryColor.withOpacity(0.5)),
                         elevation: _pendingEnhanceMode != EnhanceMode.none ? 2 : 0,
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 12),
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
                         minimumSize: const Size(0, 48),
                       ),
                       onPressed: _isProcessing ? null : _showEnhanceModeSelector,
@@ -453,42 +449,11 @@ class _EditScreenState extends State<EditScreen> {
                           _pendingEnhanceMode == EnhanceMode.none
                               ? strings.get('btn_enhance')
                               : _pendingEnhanceMode == EnhanceMode.originalColor
-                                  ? 'Color Enhanced'
+                                  ? strings.get('btn_enhance_color')
                                   : _pendingEnhanceMode == EnhanceMode.grayscale
-                                      ? 'Grayscale'
-                                      : 'B&W Contrast',
-                          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-
-                  // 3. Auto Deskew / Flatten (Fix 1)
-                  Expanded(
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: _pendingFlattened
-                            ? primaryColor
-                            : theme.colorScheme.surface,
-                        foregroundColor: _pendingFlattened
-                            ? Colors.white
-                            : theme.colorScheme.onSurface,
-                        side: BorderSide(color: primaryColor.withOpacity(0.5)),
-                        elevation: _pendingFlattened ? 2 : 0,
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 12),
-                        minimumSize: const Size(0, 48),
-                      ),
-                      onPressed: _isProcessing ? null : _autoDetectFlatten,
-                      icon: const Icon(
-                        Icons.filter_center_focus_rounded,
-                        size: 20,
-                      ),
-                      label: const FittedBox(
-                        fit: BoxFit.scaleDown,
-                        child: Text(
-                          'Auto Deskew',
-                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+                                      ? strings.get('btn_enhance_gray')
+                                      : strings.get('btn_enhance_bw'),
+                          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
                         ),
                       ),
                     ),

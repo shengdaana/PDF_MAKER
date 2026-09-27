@@ -1,6 +1,5 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:open_filex/open_filex.dart';
 import 'package:share_plus/share_plus.dart';
 import '../main.dart';
 import '../services/pdf_service.dart';
@@ -26,19 +25,15 @@ class _SuccessScreenState extends State<SuccessScreen> {
   }
 
   void _sharePdf() {
+    final strings = AppStateScope.of(context).strings;
     Share.shareXFiles(
       [XFile(_currentFile.path)],
-      text: 'Sharing PDF: $_currentFileName',
+      text: '${strings.get('share_pdf_text')}: $_currentFileName',
     );
   }
 
-  void _openPdf() async {
-    final result = await OpenFilex.open(_currentFile.path);
-    if (result.type != ResultType.done && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not open PDF viewer: ${result.message}')),
-      );
-    }
+  void _openPdf() {
+    PdfService.openPdfFile(context, _currentFile);
   }
 
   void _showRenameDialog() {
@@ -55,9 +50,10 @@ class _SuccessScreenState extends State<SuccessScreen> {
           content: TextField(
             controller: controller,
             autofocus: true,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
+              labelText: strings.get('doc_name_label'),
               suffixText: '.pdf',
-              border: OutlineInputBorder(),
+              border: const OutlineInputBorder(),
             ),
           ),
           actions: [
@@ -70,22 +66,19 @@ class _SuccessScreenState extends State<SuccessScreen> {
                 final rawName = controller.text.trim();
                 if (rawName.isEmpty) return;
 
-                // 1. Strip characters illegal in filenames
                 String sanitized = rawName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-                if (sanitized.isEmpty) sanitized = "document";
+                if (sanitized.isEmpty) sanitized = 'document';
 
-                // 2. Resolve duplicate numbering: file(1).pdf, file(2).pdf
                 final parentDir = _currentFile.parent;
-                String finalName = "$sanitized.pdf";
-                File targetFile = File("${parentDir.path}/$finalName");
+                String finalName = '$sanitized.pdf';
+                File targetFile = File('${parentDir.path}/$finalName');
                 int counter = 1;
                 while (await targetFile.exists() && targetFile.path != _currentFile.path) {
-                  finalName = "$sanitized($counter).pdf";
-                  targetFile = File("${parentDir.path}/$finalName");
+                  finalName = '$sanitized($counter).pdf';
+                  targetFile = File('${parentDir.path}/$finalName');
                   counter++;
                 }
 
-                // 3. Rename file cleanly
                 final renamed = await _currentFile.rename(targetFile.path);
                 setState(() {
                   _currentFile = renamed;
@@ -95,7 +88,7 @@ class _SuccessScreenState extends State<SuccessScreen> {
                 if (mounted) {
                   Navigator.pop(ctx);
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Renamed to $finalName')),
+                    SnackBar(content: Text('${strings.get('msg_renamed_to')} $finalName')),
                   );
                 }
               },
@@ -140,20 +133,28 @@ class _SuccessScreenState extends State<SuccessScreen> {
             children: [
               const SizedBox(height: 12),
 
-              // Header Card: "Your PDF is Created!"
+              // Header Card: "Your PDF is Created!" with lightweight confirmation fade/scale (FIX 5)
               Card(
                 elevation: 2,
                 child: Padding(
                   padding: const EdgeInsets.all(24.0),
                   child: Column(
                     children: [
-                      Container(
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Colors.green.withOpacity(0.15),
-                          shape: BoxShape.circle,
+                      TweenAnimationBuilder<double>(
+                        tween: Tween(begin: 0.75, end: 1.0),
+                        duration: const Duration(milliseconds: 250),
+                        curve: Curves.easeOutBack,
+                        builder: (context, scale, child) {
+                          return Transform.scale(scale: scale, child: child);
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.green.withOpacity(0.15),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.check_circle_rounded, color: Colors.green, size: 48),
                         ),
-                        child: const Icon(Icons.check_circle_rounded, color: Colors.green, size: 48),
                       ),
                       const SizedBox(height: 16),
                       Text(
@@ -215,7 +216,7 @@ class _SuccessScreenState extends State<SuccessScreen> {
                       ),
                       const Divider(height: 24),
                       Text(
-                        'Location: ${_currentFile.path}',
+                        '${strings.get('label_location')}: ${_currentFile.path}',
                         style: TextStyle(
                           fontSize: 11,
                           color: theme.colorScheme.onSurface.withOpacity(0.5),

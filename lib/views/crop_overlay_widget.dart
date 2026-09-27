@@ -48,6 +48,7 @@ class _CropOverlayWidgetState extends State<CropOverlayWidget> {
   _HandleType _activeHandle = _HandleType.none;
   Offset _currentTouchPosition = Offset.zero;
   late CropQuad _currentQuad;
+  MemoryImage? _cachedPreviewImage;
 
   // Touch and visual handle constants
   static const double _touchHitRadius = 56.0; // 56dp touch hit area
@@ -63,6 +64,9 @@ class _CropOverlayWidgetState extends State<CropOverlayWidget> {
   void initState() {
     super.initState();
     _currentQuad = widget.cropQuad;
+    if (widget.previewImageBytes != null) {
+      _cachedPreviewImage = MemoryImage(widget.previewImageBytes!);
+    }
 
     _scrimPaint = Paint()
       ..color = const Color(0x99000000)
@@ -112,7 +116,12 @@ class _CropOverlayWidgetState extends State<CropOverlayWidget> {
   @override
   void didUpdateWidget(CropOverlayWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (_activeHandle == _HandleType.none && widget.cropQuad != oldWidget.cropQuad) {
+    if (widget.previewImageBytes != oldWidget.previewImageBytes) {
+      _cachedPreviewImage = widget.previewImageBytes != null
+          ? MemoryImage(widget.previewImageBytes!)
+          : null;
+    }
+    if (_activeHandle == _HandleType.none && widget.cropQuad != _currentQuad) {
       _currentQuad = widget.cropQuad;
     }
   }
@@ -320,8 +329,8 @@ class _CropOverlayWidgetState extends State<CropOverlayWidget> {
                         top: imgTopInLoupe,
                         width: scaledImgW,
                         height: scaledImgH,
-                        child: Image.memory(
-                          widget.previewImageBytes!,
+                        child: Image(
+                          image: _cachedPreviewImage ?? MemoryImage(widget.previewImageBytes!),
                           fit: BoxFit.fill,
                           gaplessPlayback: true,
                           filterQuality: FilterQuality.medium,

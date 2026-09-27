@@ -1,9 +1,9 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:open_filex/open_filex.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 import '../main.dart';
+import '../models/app_settings.dart';
 import '../services/pdf_service.dart';
 
 class GeneratedPdfsScreen extends StatefulWidget {
@@ -79,7 +79,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
       _pdfFiles = loaded;
       _applySearch();
     } catch (e) {
-      debugPrint("Error loading generated PDF files: $e");
+      debugPrint('Error loading generated PDF files: $e');
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
@@ -100,20 +100,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
   }
 
   Future<void> _openPdf(File file) async {
-    try {
-      final result = await OpenFilex.open(file.path);
-      if (result.type != ResultType.done && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not open file: ${result.message}')),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error opening PDF: $e')),
-        );
-      }
-    }
+    await PdfService.openPdfFile(context, file);
   }
 
   void _sharePdf(File file) {
@@ -121,17 +108,19 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
   }
 
   void _confirmDeletePdf(File file) {
+    final strings = AppStateScope.of(context).strings;
     final fileName = file.uri.pathSegments.last;
+
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('Delete PDF?'),
-        content: Text('Are you sure you want to delete "$fileName"? This action cannot be undone.'),
+        title: Text(strings.get('delete_confirm_title')),
+        content: Text('${strings.get('delete_confirm_desc')}\n\n"$fileName"'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
+            child: Text(strings.get('cancel_btn')),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -147,18 +136,18 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                 _loadPdfFiles();
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Deleted $fileName')),
+                    SnackBar(content: Text(strings.deletedSingleFile(fileName))),
                   );
                 }
               } catch (e) {
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text('Error deleting: $e')),
+                    SnackBar(content: Text('$e')),
                   );
                 }
               }
             },
-            child: const Text('Delete'),
+            child: Text(strings.get('delete_btn')),
           ),
         ],
       ),
@@ -197,22 +186,24 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
     final List<XFile> xFiles = _selectedFilePaths.map((p) => XFile(p)).toList();
     Share.shareXFiles(
       xFiles,
-      text: 'Sharing ${_selectedFilePaths.length} PDF documents from PDF Maker Pro',
+      text: 'PDF Maker (${_selectedFilePaths.length})',
     );
   }
 
   void _batchDelete() {
     if (_selectedFilePaths.isEmpty) return;
+    final strings = AppStateScope.of(context).strings;
+
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Text('Delete ${_selectedFilePaths.length} PDFs?'),
-        content: const Text('Are you sure you want to permanently delete these selected PDFs?'),
+        title: Text(strings.deleteMultipleTitle(_selectedFilePaths.length)),
+        content: Text(strings.get('delete_batch_desc')),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
+            child: Text(strings.get('cancel_btn')),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -238,11 +229,11 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
               _loadPdfFiles();
               if (mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('Deleted $count files')),
+                  SnackBar(content: Text(strings.deletedMultipleFiles(count))),
                 );
               }
             },
-            child: const Text('Delete All'),
+            child: Text(strings.get('delete_all_btn')),
           ),
         ],
       ),
@@ -263,30 +254,11 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
     return '$hour:$minute';
   }
 
-  String _formatDateHeader(DateTime dt) {
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final fileDate = DateTime(dt.year, dt.month, dt.day);
-
-    final difference = today.difference(fileDate).inDays;
-    if (difference == 0) return 'Today';
-    if (difference == 1) return 'Yesterday';
-    if (difference < 7) {
-      const weekdays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-      return weekdays[dt.weekday - 1];
-    }
-    const months = [
-      'January', 'February', 'March', 'April', 'May', 'June',
-      'July', 'August', 'September', 'October', 'November', 'December'
-    ];
-    return '${months[dt.month - 1]} ${dt.day}, ${dt.year}';
-  }
-
-  Map<String, List<File>> _groupByDate(List<File> files) {
+  Map<String, List<File>> _groupByDate(List<File> files, AppStrings strings) {
     final Map<String, List<File>> groups = {};
     for (final file in files) {
       final modified = file.statSync().modified;
-      final header = _formatDateHeader(modified);
+      final header = strings.formatDateHeader(modified);
       groups.putIfAbsent(header, () => []).add(file);
     }
     return groups;
@@ -299,7 +271,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
     final theme = Theme.of(context);
     final primaryColor = theme.colorScheme.primary;
 
-    final groupedFiles = _groupByDate(_filteredFiles);
+    final groupedFiles = _groupByDate(_filteredFiles, strings);
 
     return Scaffold(
       appBar: AppBar(
@@ -316,14 +288,14 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
             : null,
         title: Text(
           _isSelectionMode
-              ? '${_selectedFilePaths.length} Selected'
+              ? '${_selectedFilePaths.length} ${strings.get('selected_count')}'
               : strings.get('btn_see_pdfs'),
         ),
         actions: [
           if (!_isSelectionMode && _filteredFiles.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.checklist_rounded),
-              tooltip: 'Batch Selection',
+              tooltip: strings.get('tooltip_batch_select'),
               onPressed: () => setState(() => _isSelectionMode = true),
             ),
           if (_isSelectionMode)
@@ -333,12 +305,12 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                     ? Icons.deselect_rounded
                     : Icons.select_all_rounded,
               ),
-              tooltip: 'Select All',
+              tooltip: strings.get('select_all'),
               onPressed: _toggleSelectAll,
             ),
           IconButton(
             icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Refresh list',
+            tooltip: strings.get('tooltip_refresh'),
             onPressed: _loadPdfFiles,
           ),
         ],
@@ -353,7 +325,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                 child: TextField(
                   controller: _searchController,
                   decoration: InputDecoration(
-                    hintText: 'Search generated PDFs...',
+                    hintText: strings.get('search_pdfs_hint'),
                     prefixIcon: const Icon(Icons.search_rounded),
                     suffixIcon: _searchQuery.isNotEmpty
                         ? IconButton(
@@ -384,7 +356,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                 ),
               ),
 
-            // Main PDF List (REDESIGN 7)
+            // Main PDF List
             Expanded(
               child: _isLoading
                   ? const Center(child: CircularProgressIndicator())
@@ -403,7 +375,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                                 const SizedBox(height: 16),
                                 Text(
                                   _searchQuery.isNotEmpty
-                                      ? 'No PDFs match "$_searchQuery"'
+                                      ? '${strings.get('no_pdfs_match')} "$_searchQuery"'
                                       : strings.get('no_pdfs_yet'),
                                   textAlign: TextAlign.center,
                                   style: TextStyle(
@@ -427,7 +399,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                               return Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  // Date Group Header (Gallery-Style per REDESIGN 7)
+                                  // Date Group Header
                                   Padding(
                                     padding: const EdgeInsets.fromLTRB(4, 14, 4, 8),
                                     child: Row(
@@ -468,8 +440,8 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                                       shape: RoundedRectangleBorder(
                                         borderRadius: BorderRadius.circular(14),
                                         side: isSelected
-                                          ? BorderSide(color: primaryColor, width: 2)
-                                          : BorderSide(color: theme.colorScheme.outline.withOpacity(0.12)),
+                                            ? BorderSide(color: primaryColor, width: 2)
+                                            : BorderSide(color: theme.colorScheme.outline.withOpacity(0.12)),
                                       ),
                                       child: InkWell(
                                         borderRadius: BorderRadius.circular(14),
@@ -477,7 +449,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                                           if (_isSelectionMode) {
                                             _toggleSelection(file);
                                           } else {
-                                            // Tapping opens/previews the PDF directly (REDESIGN 7)
+                                            // Tapping opens/previews the PDF via FileProvider (FIX 3)
                                             _openPdf(file);
                                           }
                                         },
@@ -493,7 +465,6 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                                           padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 10.0),
                                           child: Row(
                                             children: [
-                                              // Selection checkbox OR PDF thumbnail badge
                                               if (_isSelectionMode)
                                                 Padding(
                                                   padding: const EdgeInsets.only(right: 8.0),
@@ -544,19 +515,17 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                                                 ),
                                               ),
 
-                                              // TWO ACTION BUTTONS (REDESIGN 7): Share and Delete
+                                              // TWO ACTION BUTTONS: Share and Delete
                                               if (!_isSelectionMode) ...[
-                                                // 1. Share Button
                                                 IconButton(
                                                   icon: const Icon(Icons.share_outlined, size: 20),
-                                                  tooltip: 'Share PDF',
+                                                  tooltip: strings.get('btn_share_pdf'),
                                                   onPressed: () => _sharePdf(file),
                                                   visualDensity: VisualDensity.compact,
                                                 ),
-                                                // 2. Delete Button
                                                 IconButton(
                                                   icon: const Icon(Icons.delete_outline_rounded, size: 20, color: Colors.redAccent),
-                                                  tooltip: 'Delete PDF',
+                                                  tooltip: strings.get('delete_btn'),
                                                   onPressed: () => _confirmDeletePdf(file),
                                                   visualDensity: VisualDensity.compact,
                                                 ),
@@ -599,7 +568,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                         ),
                         onPressed: _batchDelete,
                         icon: const Icon(Icons.delete_outline_rounded, size: 20),
-                        label: Text('Delete (${_selectedFilePaths.length})'),
+                        label: Text('${strings.get('delete_btn')} (${_selectedFilePaths.length})'),
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -610,7 +579,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                         ),
                         onPressed: _batchShare,
                         icon: const Icon(Icons.share_rounded, size: 20),
-                        label: Text('Share (${_selectedFilePaths.length})'),
+                        label: Text('${strings.get('btn_share_short')} (${_selectedFilePaths.length})'),
                       ),
                     ),
                   ],

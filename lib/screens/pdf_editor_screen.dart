@@ -10,7 +10,6 @@ import '../models/pdf_page_item.dart';
 import '../services/pdf_service.dart';
 import '../utils/image_processor.dart';
 import 'edit_screen.dart';
-import 'success_screen.dart';
 
 class PdfEditorScreen extends StatefulWidget {
   final File pdfFile;
@@ -27,16 +26,15 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
   final ImagePicker _picker = ImagePicker();
 
   bool _isLoading = true;
-  String _loadingMessage = 'Loading and rasterizing PDF pages...';
+  String _loadingMessage = '';
   bool _isSaving = false;
   double _savingProgress = 0.0;
   String _savingStatus = '';
 
-  // Editing settings for this PDF
   late PdfPageSizing _pageSizing;
   bool _enableOcr = false;
-  bool _bulkFlatten = false;
   bool _bulkEnhance = false;
+  bool _initializedDeps = false;
 
   @override
   void initState() {
@@ -47,9 +45,13 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final settings = AppStateScope.of(context).settings;
-    _pageSizing = settings.pageSizing;
-    _enableOcr = settings.ocrDefault;
+    if (!_initializedDeps) {
+      final settings = AppStateScope.of(context).settings;
+      _pageSizing = settings.pageSizing;
+      _enableOcr = settings.ocrDefault;
+      _loadingMessage = AppStateScope.of(context).strings.get('status_rasterizing_pdf');
+      _initializedDeps = true;
+    }
   }
 
   @override
@@ -61,7 +63,6 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
   Future<void> _loadPdfPages() async {
     setState(() {
       _isLoading = true;
-      _loadingMessage = 'Rasterizing PDF pages...';
     });
 
     try {
@@ -85,16 +86,17 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
         );
         pageIndex++;
         if (mounted) {
+          final strings = AppStateScope.of(context).strings;
           setState(() {
-            _loadingMessage = 'Extracted $pageIndex pages...';
+            _loadingMessage = strings.extractedPages(pageIndex);
           });
         }
       }
     } catch (e) {
-      debugPrint("Error rasterizing PDF: $e");
+      debugPrint('Error rasterizing PDF: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to load PDF pages: $e')),
+          SnackBar(content: Text('$e')),
         );
       }
     } finally {
@@ -119,7 +121,6 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                 sourcePath: picked[i].path,
                 currentPreviewPath: picked[i].path,
                 isEnhanced: _bulkEnhance,
-                isFlattened: _bulkFlatten,
               ),
             );
           }
@@ -132,7 +133,7 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
         });
       }
     } catch (e) {
-      debugPrint("Error picking additional images: $e");
+      debugPrint('Error picking additional images: $e');
     }
   }
 
@@ -154,9 +155,10 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
   }
 
   void _deletePage(int index) {
+    final strings = AppStateScope.of(context).strings;
     if (_pages.length <= 1) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Cannot delete the only page in the document.')),
+        SnackBar(content: Text(strings.get('msg_cannot_delete_only_page'))),
       );
       return;
     }
@@ -171,9 +173,9 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Page ${originalIndex + 1} deleted'),
+        content: Text(strings.pageDeleted(originalIndex + 1)),
         action: SnackBarAction(
-          label: 'UNDO',
+          label: strings.get('btn_undo'),
           onPressed: () {
             setState(() {
               _pages.insert(originalIndex, deletedItem);
@@ -188,6 +190,9 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
   Future<void> _rotatePage(int index) async {
     final page = _pages[index];
     final int newRotation = (page.rotationDegrees + 90) % 360;
+    final CropQuad? rotatedQuad = page.cropQuad != null
+        ? ImageProcessor.rotateQuad(page.cropQuad!, 90)
+        : null;
 
     setState(() => _isLoading = true);
     try {
@@ -197,19 +202,21 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
         final processed = ImageProcessor.processPipeline(
           sourceImage: raw,
           rotationDegrees: newRotation,
+          cropQuad: rotatedQuad,
           normalizedCropRect: page.normalizedCropRect,
+          enhanceMode: page.enhanceMode,
           isEnhanced: page.isEnhanced,
-          isFlattened: page.isFlattened,
         );
         final newPreview = await ImageProcessor.saveToTempPreviewFile(
           processed,
           'rot_${page.id}',
         );
         page.rotationDegrees = newRotation;
+        page.cropQuad = rotatedQuad;
         page.currentPreviewPath = newPreview;
       }
     } catch (e) {
-      debugPrint("Error rotating page: $e");
+      debugPrint('Error rotating page: $e');
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
@@ -221,17 +228,7 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
     setState(() {
       _bulkEnhance = enabled;
       for (final page in _pages) {
-        page.isEnhanced = enabled;
-      }
-    });
-    await _reprocessAllPreviews();
-  }
-
-  Future<void> _toggleBulkFlatten(bool enabled) async {
-    setState(() {
-      _bulkFlatten = enabled;
-      for (final page in _pages) {
-        page.isFlattened = enabled;
+        page.enhanceMode = enabled ? EnhanceMode.originalColor : EnhanceMode.none;
       }
     });
     await _reprocessAllPreviews();
@@ -244,9 +241,9 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
 
     try {
       for (final page in _pages) {
-        if (!page.isEnhanced &&
-            !page.isFlattened &&
+        if (page.enhanceMode == EnhanceMode.none &&
             page.rotationDegrees == 0 &&
+            page.cropQuad == null &&
             page.normalizedCropRect == null) {
           page.currentPreviewPath = page.sourcePath;
           continue;
@@ -258,9 +255,10 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
           final processed = ImageProcessor.processPipeline(
             sourceImage: raw,
             rotationDegrees: page.rotationDegrees,
+            cropQuad: page.cropQuad,
             normalizedCropRect: page.normalizedCropRect,
+            enhanceMode: page.enhanceMode,
             isEnhanced: page.isEnhanced,
-            isFlattened: page.isFlattened,
           );
           final preview = await ImageProcessor.saveToTempPreviewFile(
             processed,
@@ -270,7 +268,7 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
         }
       }
     } catch (e) {
-      debugPrint("Error reprocessing previews: $e");
+      debugPrint('Error reprocessing previews: $e');
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
@@ -309,25 +307,25 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
 
   Future<void> _saveEditedPdf({required bool saveAsNewCopy}) async {
     if (_pages.isEmpty) return;
+    final strings = AppStateScope.of(context).strings;
 
     setState(() {
       _isSaving = true;
       _savingProgress = 0.0;
-      _savingStatus = 'Generating updated PDF...';
+      _savingStatus = strings.get('status_preparing_pages');
     });
 
     try {
       final appSettings = AppStateScope.of(context).settings;
-      // Construct a scoped settings object with this editor's page sizing
       final effectiveSettings = AppSettings(
         themePalette: appSettings.themePalette,
         language: appSettings.language,
         pageSizing: _pageSizing,
         qualityPreset: appSettings.qualityPreset,
+        isDarkMode: appSettings.isDarkMode,
         ocrDefault: _enableOcr,
         hideReorderArrows: appSettings.hideReorderArrows,
         mergePagesBetweenPages: appSettings.mergePagesBetweenPages,
-        premiumAnimations: appSettings.premiumAnimations,
         saveFolder: appSettings.saveFolder,
       );
 
@@ -347,9 +345,7 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
       );
 
       if (!saveAsNewCopy) {
-        // Overwrite the original file with the new PDF content
         await result.file.copy(widget.pdfFile.path);
-        // Clean up the newly generated temporary file
         try {
           if (result.file.path != widget.pdfFile.path) {
             await result.file.delete();
@@ -361,17 +357,17 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(saveAsNewCopy
-                ? 'Saved new copy: ${result.fileName}'
-                : 'Changes saved to ${widget.pdfFile.uri.pathSegments.last}'),
+                ? '${strings.get('msg_saved_new_copy')} ${result.fileName}'
+                : '${strings.get('msg_changes_saved_to')} ${widget.pdfFile.uri.pathSegments.last}'),
           ),
         );
         Navigator.pop(context, saveAsNewCopy ? result.file : widget.pdfFile);
       }
     } catch (e) {
-      debugPrint("Error saving edited PDF: $e");
+      debugPrint('Error saving edited PDF: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to save PDF: $e')),
+          SnackBar(content: Text('${strings.get('msg_pdf_gen_failed')}: $e')),
         );
         setState(() => _isSaving = false);
       }
@@ -399,7 +395,7 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Top Editor Toolbar Card (A4 Size, OCR, Filters)
+            // Top Editor Toolbar Card
             Card(
               margin: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
               elevation: 1,
@@ -407,7 +403,6 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                 padding: const EdgeInsets.all(12.0),
                 child: Column(
                   children: [
-                    // A4 Sizing Segmented Control
                     Row(
                       children: [
                         Icon(Icons.aspect_ratio_rounded, color: primaryColor, size: 20),
@@ -419,16 +414,16 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                           ),
                         ),
                         SegmentedButton<PdfPageSizing>(
-                          segments: const [
+                          segments: [
                             ButtonSegment(
                               value: PdfPageSizing.a4Standard,
-                              label: Text('A4 Size', style: TextStyle(fontSize: 12)),
-                              icon: Icon(Icons.description_outlined, size: 16),
+                              label: Text(strings.get('sizing_a4_short'), style: const TextStyle(fontSize: 12)),
+                              icon: const Icon(Icons.description_outlined, size: 16),
                             ),
                             ButtonSegment(
                               value: PdfPageSizing.freeDynamic,
-                              label: Text('Original', style: TextStyle(fontSize: 12)),
-                              icon: Icon(Icons.fit_screen_outlined, size: 16),
+                              label: Text(strings.get('sizing_orig_short'), style: const TextStyle(fontSize: 12)),
+                              icon: const Icon(Icons.fit_screen_outlined, size: 16),
                             ),
                           ],
                           selected: {_pageSizing},
@@ -442,10 +437,8 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                     ),
                     const Divider(height: 12),
 
-                    // OCR and Bulk Filter Toggles
                     Row(
                       children: [
-                        // Searchable OCR Toggle
                         Expanded(
                           child: InkWell(
                             borderRadius: BorderRadius.circular(8),
@@ -461,7 +454,7 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                                   const SizedBox(width: 6),
                                   Expanded(
                                     child: Text(
-                                      'OCR Search',
+                                      strings.get('ocr_search_short'),
                                       style: TextStyle(
                                         fontSize: 12,
                                         fontWeight: _enableOcr ? FontWeight.bold : FontWeight.normal,
@@ -481,7 +474,6 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                         ),
                         const SizedBox(width: 8),
 
-                        // Enhance B&W Toggle
                         Expanded(
                           child: InkWell(
                             borderRadius: BorderRadius.circular(8),
@@ -495,7 +487,7 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                                   const SizedBox(width: 6),
                                   Expanded(
                                     child: Text(
-                                      'B&W Scan',
+                                      strings.get('bw_scan_short'),
                                       style: TextStyle(
                                         fontSize: 12,
                                         fontWeight: _bulkEnhance ? FontWeight.bold : FontWeight.normal,
@@ -520,7 +512,6 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
               ),
             ),
 
-            // Progress Banner During Saving
             if (_isSaving)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 6.0),
@@ -538,7 +529,6 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                 ),
               ),
 
-            // Pages List
             Expanded(
               child: _isLoading
                   ? Center(
@@ -552,7 +542,7 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                       ),
                     )
                   : _pages.isEmpty
-                      ? const Center(child: Text('No pages found in this PDF'))
+                      ? Center(child: Text(strings.get('no_pdfs_yet'), textAlign: TextAlign.center))
                       : ListView.builder(
                           controller: _scrollController,
                           padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 8.0),
@@ -576,7 +566,6 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
-                                  // Page Preview
                                   GestureDetector(
                                     onTap: () => _openEditPage(index),
                                     child: Stack(
@@ -595,8 +584,6 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                                             ),
                                           ),
                                         ),
-
-                                        // Floating Page Badge
                                         Positioned(
                                           top: 10,
                                           left: 10,
@@ -608,7 +595,7 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                                               borderRadius: BorderRadius.circular(12),
                                             ),
                                             child: Text(
-                                              'Page ${index + 1} of ${_pages.length}',
+                                              strings.pageOf(index + 1, _pages.length),
                                               style: const TextStyle(
                                                 color: Colors.white,
                                                 fontWeight: FontWeight.bold,
@@ -620,8 +607,6 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                                       ],
                                     ),
                                   ),
-
-                                  // Action Bar
                                   Container(
                                     padding: const EdgeInsets.symmetric(
                                         horizontal: 8.0, vertical: 4.0),
@@ -637,27 +622,27 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                                           ),
                                           onPressed: () => _openEditPage(index),
                                           icon: const Icon(Icons.crop_rotate_rounded, size: 18),
-                                          label: const Text('Edit / Crop'),
+                                          label: Text(strings.get('edit_crop_btn')),
                                         ),
                                         IconButton(
                                           icon: const Icon(Icons.rotate_right_rounded, size: 20),
-                                          tooltip: 'Rotate 90°',
+                                          tooltip: strings.get('btn_rotate_90'),
                                           onPressed: () => _rotatePage(index),
                                         ),
                                         IconButton(
                                           icon: const Icon(Icons.arrow_upward_rounded, size: 18),
-                                          tooltip: 'Move up',
+                                          tooltip: strings.get('tooltip_move_up'),
                                           onPressed: isFirst ? null : () => _movePage(index, index - 1),
                                         ),
                                         IconButton(
                                           icon: const Icon(Icons.arrow_downward_rounded, size: 18),
-                                          tooltip: 'Move down',
+                                          tooltip: strings.get('tooltip_move_down'),
                                           onPressed: isLast ? null : () => _movePage(index, index + 1),
                                         ),
                                         IconButton(
                                           icon: const Icon(Icons.delete_outline_rounded,
                                               size: 20, color: Colors.redAccent),
-                                          tooltip: 'Delete page',
+                                          tooltip: strings.get('tooltip_delete_page'),
                                           onPressed: () => _deletePage(index),
                                         ),
                                       ],
@@ -670,7 +655,6 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                         ),
             ),
 
-            // Bottom Action Bar: "Save Changes" and "Save as Copy"
             Container(
               padding: const EdgeInsets.all(14.0),
               decoration: BoxDecoration(

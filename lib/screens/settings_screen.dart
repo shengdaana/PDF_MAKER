@@ -64,7 +64,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Row(
                 children: [
                   _themeCard(
-                    title: 'Indigo / Blue',
+                    title: strings.get('theme_indigo'),
                     color: const Color(0xFF4F46E5),
                     selected: settings.themePalette == AppThemePalette.indigoBlue,
                     onTap: () {
@@ -73,7 +73,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     },
                   ),
                   _themeCard(
-                    title: 'Forest Green',
+                    title: strings.get('theme_green'),
                     color: const Color(0xFF16A34A),
                     selected: settings.themePalette == AppThemePalette.lightGreen,
                     onTap: () {
@@ -82,7 +82,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     },
                   ),
                   _themeCard(
-                    title: 'Deep Purple',
+                    title: strings.get('theme_purple'),
                     color: const Color(0xFF7C3AED),
                     selected: settings.themePalette == AppThemePalette.purple,
                     onTap: () {
@@ -91,7 +91,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     },
                   ),
                   _themeCard(
-                    title: 'Rose Pink',
+                    title: strings.get('theme_pink'),
                     color: const Color(0xFFDB2777),
                     selected: settings.themePalette == AppThemePalette.pink,
                     onTap: () {
@@ -100,7 +100,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     },
                   ),
                   _themeCard(
-                    title: 'High Contrast Dark',
+                    title: strings.get('theme_high_contrast'),
                     color: const Color(0xFF1A1A1A),
                     accentBorder: const Color(0xFF818CF8),
                     selected: settings.themePalette == AppThemePalette.highContrastDark,
@@ -126,7 +126,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                 children: [
                   RadioListTile<AppLanguage>(
-                    title: const Text('English (Default)'),
+                    title: Text(strings.get('lang_opt_english')),
                     value: AppLanguage.english,
                     groupValue: settings.language,
                     onChanged: (val) {
@@ -137,7 +137,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     },
                   ),
                   RadioListTile<AppLanguage>(
-                    title: const Text('व्यावहारिक हिंदी (Everyday Hindi)'),
+                    title: Text(strings.get('lang_opt_hindi')),
                     value: AppLanguage.everydayHindi,
                     groupValue: settings.language,
                     onChanged: (val) {
@@ -148,7 +148,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     },
                   ),
                   RadioListTile<AppLanguage>(
-                    title: const Text('Hinglish (Roman Hindi)'),
+                    title: Text(strings.get('lang_opt_hinglish')),
                     value: AppLanguage.hinglish,
                     groupValue: settings.language,
                     onChanged: (val) {
@@ -175,8 +175,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                 children: [
                   RadioListTile<PdfPageSizing>(
-                    title: const Text('Free / Dynamic (Native Aspect Ratio)'),
-                    subtitle: const Text('Zero margins, no black bars, exact photo size'),
+                    title: Text(strings.get('sizing_free_title')),
+                    subtitle: Text(strings.get('sizing_free_desc')),
                     value: PdfPageSizing.freeDynamic,
                     groupValue: settings.pageSizing,
                     onChanged: (val) {
@@ -187,8 +187,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     },
                   ),
                   RadioListTile<PdfPageSizing>(
-                    title: const Text('A4 Standard'),
-                    subtitle: const Text('Standard document page with margin borders'),
+                    title: Text(strings.get('sizing_a4_title')),
+                    subtitle: Text(strings.get('sizing_a4_desc')),
                     value: PdfPageSizing.a4Standard,
                     groupValue: settings.pageSizing,
                     onChanged: (val) {
@@ -215,8 +215,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               child: Column(
                 children: [
                   RadioListTile<PdfQualityPreset>(
-                    title: const Text('Standard Quality (Default)'),
-                    subtitle: const Text('Optimized for WhatsApp (~10MB limit)'),
+                    title: Text(strings.get('quality_std_setting_title')),
+                    subtitle: Text(strings.get('quality_standard_desc')),
                     value: PdfQualityPreset.standard,
                     groupValue: settings.qualityPreset,
                     onChanged: (val) {
@@ -227,8 +227,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     },
                   ),
                   RadioListTile<PdfQualityPreset>(
-                    title: const Text('HD Original Quality'),
-                    subtitle: const Text('Maximum clarity for printing & archiving'),
+                    title: Text(strings.get('quality_hd')),
+                    subtitle: Text(strings.get('quality_hd_desc')),
                     value: PdfQualityPreset.hdOriginal,
                     groupValue: settings.qualityPreset,
                     onChanged: (val) {
@@ -239,8 +239,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     },
                   ),
                   RadioListTile<PdfQualityPreset>(
-                    title: const Text('Always Ask'),
-                    subtitle: const Text('Prompt every time before creating PDF'),
+                    title: Text(strings.get('quality_ask_title')),
+                    subtitle: Text(strings.get('quality_ask_desc')),
                     value: PdfQualityPreset.alwaysAsk,
                     groupValue: settings.qualityPreset,
                     onChanged: (val) {
@@ -257,13 +257,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 20),
             const Divider(),
 
-            // 5 & 6. Simplified Mode & Controls
+            // 5. Controls (FIX 5: Premium Animations toggle removed)
             Card(
               child: Column(
                 children: [
                   SwitchListTile(
                     title: Text(strings.get('ocr_default_title')),
-                    subtitle: const Text('Start Arrange screen with OCR toggle enabled'),
+                    subtitle: Text(strings.get('ocr_default_desc')),
                     value: settings.ocrDefault,
                     onChanged: (val) {
                       settings.ocrDefault = val;
@@ -273,7 +273,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const Divider(height: 1),
                   SwitchListTile(
                     title: Text(strings.get('reorder_arrows_title')),
-                    subtitle: const Text('Hides ▲/▼ arrows on page cards'),
+                    subtitle: Text(strings.get('reorder_arrows_desc')),
                     value: settings.hideReorderArrows,
                     onChanged: (val) {
                       settings.hideReorderArrows = val;
@@ -283,20 +283,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const Divider(height: 1),
                   SwitchListTile(
                     title: Text(strings.get('merge_toggle_title')),
-                    subtitle: const Text('Enables vertical page merge button on Arrange screen'),
+                    subtitle: Text(strings.get('merge_toggle_desc')),
                     value: settings.mergePagesBetweenPages,
                     onChanged: (val) {
                       settings.mergePagesBetweenPages = val;
-                      update(settings);
-                    },
-                  ),
-                  const Divider(height: 1),
-                  SwitchListTile(
-                    title: Text(strings.get('anim_toggle_title')),
-                    subtitle: Text(strings.get('anim_toggle_desc')),
-                    value: settings.premiumAnimations,
-                    onChanged: (val) {
-                      settings.premiumAnimations = val;
                       update(settings);
                     },
                   ),
@@ -307,7 +297,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 20),
             const Divider(),
 
-            // 7. Default Save Folder
+            // 6. Default Save Folder
             Card(
               child: ListTile(
                 leading: const Icon(Icons.folder_shared_rounded),
@@ -316,17 +306,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 trailing: TextButton(
                   onPressed: () {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Standard public documents directory is active.')),
+                      SnackBar(content: Text(strings.get('msg_folder_active'))),
                     );
                   },
-                  child: const Text('Change'),
+                  child: Text(strings.get('btn_change_folder')),
                 ),
               ),
             ),
 
             const SizedBox(height: 12),
 
-            // 8. Privacy & Security Footer
+            // 7. Privacy & Security Footer
             Card(
               color: primaryColor.withOpacity(0.08),
               elevation: 0,
@@ -339,9 +329,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       children: [
                         Icon(Icons.security_rounded, color: primaryColor, size: 22),
                         const SizedBox(width: 8),
-                        Text(
-                          strings.get('privacy_title'),
-                          style: TextStyle(fontWeight: FontWeight.bold, color: primaryColor),
+                        Expanded(
+                          child: Text(
+                            strings.get('privacy_title'),
+                            style: TextStyle(fontWeight: FontWeight.bold, color: primaryColor),
+                          ),
                         ),
                       ],
                     ),
@@ -357,7 +349,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
             const SizedBox(height: 12),
 
-            // 9. Open Source Licenses
+            // 8. Open Source Licenses
             Card(
               child: ListTile(
                 leading: const Icon(Icons.policy_rounded),
@@ -373,29 +365,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         children: [
                           Icon(Icons.policy_rounded, color: primaryColor),
                           const SizedBox(width: 10),
-                          const Text('License Info'),
+                          Expanded(child: Text(strings.get('license_dialog_title'))),
                         ],
                       ),
                       content: Column(
                         mainAxisSize: MainAxisSize.min,
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text(
-                            'PDF Maker Pro',
-                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                          Text(
+                            strings.get('app_title'),
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            'Version 1.0.0',
+                            strings.get('license_version'),
                             style: TextStyle(
                               color: theme.colorScheme.onSurface.withOpacity(0.6),
                               fontSize: 13,
                             ),
                           ),
                           const SizedBox(height: 16),
-                          const Text(
-                            'License:',
-                            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                          Text(
+                            strings.get('license_label'),
+                            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
                           ),
                           const SizedBox(height: 6),
                           Container(
@@ -419,7 +411,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ),
                           const SizedBox(height: 14),
                           Text(
-                            'Third-party libraries: Flutter, Google ML Kit, image, pdf, printing, receive_sharing_intent, share_plus (Apache 2.0 / BSD-3-Clause / MIT).',
+                            strings.get('license_libs_note'),
                             style: TextStyle(
                               fontSize: 12,
                               color: theme.colorScheme.onSurface.withOpacity(0.65),
@@ -431,7 +423,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       actions: [
                         TextButton(
                           onPressed: () => Navigator.pop(ctx),
-                          child: const Text('Close'),
+                          child: Text(strings.get('close_btn')),
                         ),
                       ],
                     ),

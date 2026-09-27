@@ -1,5 +1,5 @@
-name: pdf_maker_pro
-description: "PDF Maker Pro - Convert photos to high-quality searchable PDFs with manual crop, perspective flattening, and on-device OCR."
+name: pdf_maker
+description: "PDF Maker - Convert photos to high-quality searchable PDFs with manual crop, perspective flattening, and on-device OCR."
 publish_to: 'none'
 
 version: 1.0.0+1
@@ -34,12 +34,8 @@ dependencies:
   # On-device OCR (Google ML Kit - 100% offline)
   google_mlkit_text_recognition: ^0.13.0
 
-  # File opening and system sharing
-  open_filex: ^4.5.0
+  # System sharing
   share_plus: '>=10.0.1 <14.0.0'
-
-  # Document scanning, corner detection & perspective correction
-  document_scan: ^0.2.2
 
 dev_dependencies:
   flutter_test:
