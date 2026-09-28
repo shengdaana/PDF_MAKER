@@ -1,15 +1,8 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 
-/// Enhance filter modes per REDESIGN 6
-enum EnhanceMode {
-  none,
-  originalColor, // Default: sharpness and contrast boost only, colors preserved as-is
-  grayscale, // Desaturated but retains tonal shading
-  bwHighContrast, // Pure high-contrast black/white scan mode
-}
-
-/// 4-point quadrilateral for manual perspective crop & deskew (FIX 1)
+/// 4-point quadrilateral for manual perspective crop & deskew.
+/// Defaults to full-frame [0.0 .. 1.0] so untouched pages are never cropped (FIX 2).
 class CropQuad {
   final Offset topLeft; // Normalized coordinates in range [0.0 .. 1.0]
   final Offset topRight;
@@ -17,10 +10,10 @@ class CropQuad {
   final Offset bottomLeft;
 
   const CropQuad({
-    this.topLeft = const Offset(0.05, 0.05),
-    this.topRight = const Offset(0.95, 0.05),
-    this.bottomRight = const Offset(0.95, 0.95),
-    this.bottomLeft = const Offset(0.05, 0.95),
+    this.topLeft = const Offset(0.0, 0.0),
+    this.topRight = const Offset(1.0, 0.0),
+    this.bottomRight = const Offset(1.0, 1.0),
+    this.bottomLeft = const Offset(0.0, 1.0),
   });
 
   static const CropQuad full = CropQuad(
@@ -31,10 +24,10 @@ class CropQuad {
   );
 
   bool get isFullFrame =>
-      (topLeft.dx <= 0.01 && topLeft.dy <= 0.01) &&
-      (topRight.dx >= 0.99 && topRight.dy <= 0.01) &&
-      (bottomRight.dx >= 0.99 && bottomRight.dy >= 0.99) &&
-      (bottomLeft.dx <= 0.01 && bottomLeft.dy >= 0.99);
+      (topLeft.dx <= 0.005 && topLeft.dy <= 0.005) &&
+      (topRight.dx >= 0.995 && topRight.dy <= 0.005) &&
+      (bottomRight.dx >= 0.995 && bottomRight.dy >= 0.995) &&
+      (bottomLeft.dx <= 0.005 && bottomLeft.dy >= 0.995);
 
   CropQuad copyWith({
     Offset? topLeft,
@@ -67,9 +60,9 @@ class CropQuad {
 class PdfPageItem {
   final String id;
   final String sourcePath;
+  String basePreviewPath;
   String currentPreviewPath;
   int rotationDegrees;
-  EnhanceMode enhanceMode;
   CropQuad? cropQuad;
   Rect? normalizedCropRect; // In range [0.0, 1.0] for legacy compatibility
   bool mergedWithNext;
@@ -78,47 +71,39 @@ class PdfPageItem {
     required this.id,
     required this.sourcePath,
     required this.currentPreviewPath,
+    String? basePreviewPath,
     this.rotationDegrees = 0,
-    this.enhanceMode = EnhanceMode.none,
-    bool isEnhanced = false,
     this.cropQuad,
     this.normalizedCropRect,
     this.mergedWithNext = false,
-  }) {
-    if (isEnhanced && enhanceMode == EnhanceMode.none) {
-      enhanceMode = EnhanceMode.originalColor;
-    }
-  }
+  }) : basePreviewPath = basePreviewPath ?? currentPreviewPath;
 
-  bool get isEnhanced => enhanceMode != EnhanceMode.none;
-  set isEnhanced(bool val) {
-    enhanceMode = val ? EnhanceMode.originalColor : EnhanceMode.none;
-  }
+  bool get hasCustomCrop =>
+      (cropQuad != null && !cropQuad!.isFullFrame) ||
+      (normalizedCropRect != null &&
+          normalizedCropRect != const Rect.fromLTWH(0.0, 0.0, 1.0, 1.0));
+
+  bool get hasEdits => (rotationDegrees % 360 != 0) || hasCustomCrop;
 
   File get previewFile => File(currentPreviewPath);
 
   PdfPageItem cloneWith({
+    String? basePreviewPath,
     String? currentPreviewPath,
     int? rotationDegrees,
-    EnhanceMode? enhanceMode,
-    bool? isEnhanced,
     CropQuad? cropQuad,
+    bool clearCropQuad = false,
     Rect? normalizedCropRect,
     bool? mergedWithNext,
   }) {
-    EnhanceMode resolvedEnhance = enhanceMode ?? this.enhanceMode;
-    if (isEnhanced != null) {
-      resolvedEnhance = isEnhanced ? EnhanceMode.originalColor : EnhanceMode.none;
-    }
-
     return PdfPageItem(
       id: id,
       sourcePath: sourcePath,
+      basePreviewPath: basePreviewPath ?? this.basePreviewPath,
       currentPreviewPath: currentPreviewPath ?? this.currentPreviewPath,
       rotationDegrees: rotationDegrees ?? this.rotationDegrees,
-      enhanceMode: resolvedEnhance,
-      cropQuad: cropQuad ?? this.cropQuad,
-      normalizedCropRect: normalizedCropRect ?? this.normalizedCropRect,
+      cropQuad: clearCropQuad ? null : (cropQuad ?? this.cropQuad),
+      normalizedCropRect: clearCropQuad ? null : (normalizedCropRect ?? this.normalizedCropRect),
       mergedWithNext: mergedWithNext ?? this.mergedWithNext,
     );
   }

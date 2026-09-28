@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import '../main.dart';
 import '../models/app_settings.dart';
 import '../models/pdf_page_item.dart';
@@ -23,8 +24,8 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
   final ScrollController _scrollController = ScrollController();
   final ImagePicker _picker = ImagePicker();
 
-  bool _enhanceAll = false;
   bool _searchableOcr = false;
+  bool _initializedDeps = false;
   bool _isLoading = true;
   bool _isGeneratingPdf = false;
   double _generationProgress = 0.0;
@@ -39,8 +40,11 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final settings = AppStateScope.of(context).settings;
-    _searchableOcr = settings.ocrDefault;
+    if (!_initializedDeps) {
+      final settings = AppStateScope.of(context).settings;
+      _searchableOcr = settings.ocrDefault;
+      _initializedDeps = true;
+    }
   }
 
   @override
@@ -49,46 +53,82 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
     super.dispose();
   }
 
+  /// Generates downsampled thumbnails in a background isolate once per photo (FIX 3)
+  /// so list cards and EditScreen previews never decode full camera-resolution photos on the UI thread.
   Future<void> _loadInitialPhotos() async {
     setState(() => _isLoading = true);
-    for (int i = 0; i < widget.initialImagePaths.length; i++) {
-      final path = widget.initialImagePaths[i];
-      _pages.add(
-        PdfPageItem(
-          id: '${DateTime.now().millisecondsSinceEpoch}_$i',
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final String tempDirPath = tempDir.path;
+      final int nowMs = DateTime.now().millisecondsSinceEpoch;
+
+      for (int i = 0; i < widget.initialImagePaths.length; i++) {
+        final String path = widget.initialImagePaths[i];
+        final String id = '${nowMs}_$i';
+        final String thumbPath = await ImageProcessor.generateDownsampledThumbnail(
           sourcePath: path,
-          currentPreviewPath: path,
-        ),
-      );
-    }
-    if (mounted) {
-      setState(() => _isLoading = false);
+          tempDirPath: tempDirPath,
+          pageId: id,
+          maxDimension: 960,
+        );
+
+        _pages.add(
+          PdfPageItem(
+            id: id,
+            sourcePath: path,
+            basePreviewPath: thumbPath,
+            currentPreviewPath: thumbPath,
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('Error loading initial photos: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 
   Future<void> _addMorePhotos() async {
     try {
       final picked = await _picker.pickMultiImage(imageQuality: 100);
-      if (picked.isNotEmpty) {
-        final double savedScrollOffset =
-            _scrollController.hasClients ? _scrollController.offset : 0.0;
+      if (picked.isEmpty) return;
 
+      final double savedScrollOffset =
+          _scrollController.hasClients ? _scrollController.offset : 0.0;
+
+      setState(() => _isLoading = true);
+
+      final tempDir = await getTemporaryDirectory();
+      final String tempDirPath = tempDir.path;
+      final int nowMs = DateTime.now().millisecondsSinceEpoch;
+      final List<PdfPageItem> newItems = [];
+
+      for (int i = 0; i < picked.length; i++) {
+        final String path = picked[i].path;
+        final String id = '${nowMs}_add_$i';
+        final String thumbPath = await ImageProcessor.generateDownsampledThumbnail(
+          sourcePath: path,
+          tempDirPath: tempDirPath,
+          pageId: id,
+          maxDimension: 960,
+        );
+        newItems.add(
+          PdfPageItem(
+            id: id,
+            sourcePath: path,
+            basePreviewPath: thumbPath,
+            currentPreviewPath: thumbPath,
+          ),
+        );
+      }
+
+      if (mounted) {
         setState(() {
-          for (int i = 0; i < picked.length; i++) {
-            _pages.add(
-              PdfPageItem(
-                id: '${DateTime.now().millisecondsSinceEpoch}_add_$i',
-                sourcePath: picked[i].path,
-                currentPreviewPath: picked[i].path,
-                isEnhanced: _enhanceAll,
-              ),
-            );
-          }
+          _pages.addAll(newItems);
+          _isLoading = false;
         });
-
-        if (_enhanceAll) {
-          _reprocessAllPreviews();
-        }
 
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (_scrollController.hasClients) {
@@ -98,6 +138,9 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
       }
     } catch (e) {
       debugPrint('Error picking additional photos: $e');
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 
@@ -142,62 +185,6 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
         duration: const Duration(seconds: 4),
       ),
     );
-  }
-
-  Future<void> _toggleEnhanceAll(bool enabled) async {
-    setState(() {
-      _enhanceAll = enabled;
-      for (final page in _pages) {
-        page.enhanceMode = enabled ? EnhanceMode.originalColor : EnhanceMode.none;
-      }
-    });
-    await _reprocessAllPreviews();
-  }
-
-  Future<void> _reprocessAllPreviews() async {
-    final double savedScrollOffset =
-        _scrollController.hasClients ? _scrollController.offset : 0.0;
-    setState(() => _isLoading = true);
-
-    try {
-      for (final page in _pages) {
-        if (page.enhanceMode == EnhanceMode.none &&
-            page.rotationDegrees == 0 &&
-            page.cropQuad == null &&
-            page.normalizedCropRect == null) {
-          page.currentPreviewPath = page.sourcePath;
-          continue;
-        }
-
-        final file = File(page.sourcePath);
-        final raw = await ImageProcessor.loadAndNormalizeExif(file);
-        if (raw != null) {
-          final processed = ImageProcessor.processPipeline(
-            sourceImage: raw,
-            rotationDegrees: page.rotationDegrees,
-            cropQuad: page.cropQuad,
-            normalizedCropRect: page.normalizedCropRect,
-            enhanceMode: page.enhanceMode,
-          );
-          final preview = await ImageProcessor.saveToTempPreviewFile(
-            processed,
-            'prev_${page.id}',
-          );
-          page.currentPreviewPath = preview;
-        }
-      }
-    } catch (e) {
-      debugPrint('Error reprocessing previews: $e');
-    } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (_scrollController.hasClients) {
-            _scrollController.jumpTo(savedScrollOffset);
-          }
-        });
-      }
-    }
   }
 
   Future<void> _openEditScreen(int index) async {
@@ -360,73 +347,36 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
           IconButton(
             icon: const Icon(Icons.add_photo_alternate_rounded, size: 26),
             tooltip: strings.get('btn_add_photos'),
-            onPressed: _isGeneratingPdf ? null : _addMorePhotos,
+            onPressed: (_isGeneratingPdf || _isLoading) ? null : _addMorePhotos,
           ),
         ],
       ),
       body: SafeArea(
         child: Column(
           children: [
-            // Top Bulk Action Controls Card (Enhance All, OCR)
+            // Top Controls Card (OCR Search Toggle — FIX 1: Enhance All removed)
             Card(
               margin: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
               elevation: 1,
               child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 8.0),
-                child: Column(
+                padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 6.0),
+                child: Row(
                   children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Row(
-                            children: [
-                              Icon(Icons.auto_fix_high_rounded,
-                                  size: 18, color: primaryColor),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  strings.get('toggle_enhance_all'),
-                                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Switch(
-                          value: _enhanceAll,
-                          onChanged: _isGeneratingPdf ? null : _toggleEnhanceAll,
-                          activeColor: primaryColor,
-                        ),
-                      ],
+                    Icon(Icons.document_scanner_rounded, size: 18, color: primaryColor),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        strings.get('toggle_ocr'),
+                        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
-                    const Divider(height: 4),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Row(
-                            children: [
-                              Icon(Icons.document_scanner_rounded,
-                                  size: 18, color: primaryColor),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  strings.get('toggle_ocr'),
-                                  style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        Switch(
-                          value: _searchableOcr,
-                          onChanged: _isGeneratingPdf
-                              ? null
-                              : (val) => setState(() => _searchableOcr = val),
-                          activeColor: primaryColor,
-                        ),
-                      ],
+                    Switch(
+                      value: _searchableOcr,
+                      onChanged: _isGeneratingPdf
+                          ? null
+                          : (val) => setState(() => _searchableOcr = val),
+                      activeColor: primaryColor,
                     ),
                   ],
                 ),
@@ -468,15 +418,17 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                       children: [
                         LinearProgressIndicator(value: _generationProgress),
                         const SizedBox(height: 10),
-                        Text(_generationStatus,
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                        Text(
+                          _generationStatus,
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                        ),
                       ],
                     ),
                   ),
                 ),
               ),
 
-            // Hero Cards Page List
+            // Hero Cards Page List (with downsampled thumbnails & cacheWidth for 60fps scroll - FIX 3)
             Expanded(
               child: _isLoading
                   ? const Center(child: CircularProgressIndicator())
@@ -491,140 +443,180 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                             final isFirst = index == 0;
                             final isLast = index == _pages.length - 1;
 
-                            final cardContent = Card(
-                              key: ValueKey(page.id),
-                              margin: const EdgeInsets.symmetric(vertical: 10.0),
-                              clipBehavior: Clip.antiAlias,
-                              elevation: 3,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(18),
-                              ),
-                              child: InkWell(
-                                onTap: () => _openEditScreen(index),
-                                child: Stack(
-                                  children: [
-                                    // 1. Edge-to-Edge Photo as Card Background
-                                    SizedBox(
-                                      width: double.infinity,
-                                      height: 300,
-                                      child: Image.file(
-                                        File(page.currentPreviewPath),
-                                        fit: BoxFit.cover,
+                            final cardContent = RepaintBoundary(
+                              child: Card(
+                                key: ValueKey(page.id),
+                                margin: const EdgeInsets.symmetric(vertical: 10.0),
+                                clipBehavior: Clip.antiAlias,
+                                elevation: 2,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(18),
+                                ),
+                                child: InkWell(
+                                  onTap: () => _openEditScreen(index),
+                                  child: Stack(
+                                    children: [
+                                      // 1. Downsampled Photo Card Background with cacheWidth
+                                      SizedBox(
                                         width: double.infinity,
                                         height: 300,
-                                        key: ValueKey(page.currentPreviewPath),
-                                        errorBuilder: (_, __, ___) => const Center(
-                                          child: Icon(Icons.broken_image_rounded, size: 48, color: Colors.grey),
-                                        ),
-                                      ),
-                                    ),
-
-                                    // 2. Top-Left: Floating Page Badge
-                                    Positioned(
-                                      top: 12,
-                                      left: 12,
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xAA000000),
-                                          borderRadius: BorderRadius.circular(12),
-                                        ),
-                                        child: Text(
-                                          strings.pageOf(index + 1, _pages.length),
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 12,
+                                        child: Image.file(
+                                          File(page.currentPreviewPath),
+                                          fit: BoxFit.cover,
+                                          width: double.infinity,
+                                          height: 300,
+                                          cacheWidth: 800,
+                                          filterQuality: FilterQuality.low,
+                                          gaplessPlayback: true,
+                                          key: ValueKey(page.currentPreviewPath),
+                                          errorBuilder: (_, __, ___) => const Center(
+                                            child: Icon(
+                                              Icons.broken_image_rounded,
+                                              size: 48,
+                                              color: Colors.grey,
+                                            ),
                                           ),
                                         ),
                                       ),
-                                    ),
 
-                                    // 3. Top-Right: Floating Delete Page Button
-                                    Positioned(
-                                      top: 8,
-                                      right: 8,
-                                      child: Material(
-                                        color: const Color(0xAA000000),
-                                        shape: const CircleBorder(),
-                                        child: InkWell(
-                                          customBorder: const CircleBorder(),
-                                          onTap: () => _deletePage(index),
+                                      // 2. Top-Left: Floating Page Badge
+                                      Positioned(
+                                        top: 12,
+                                        left: 12,
+                                        child: DecoratedBox(
+                                          decoration: const BoxDecoration(
+                                            color: Color(0xAA000000),
+                                            borderRadius: BorderRadius.all(Radius.circular(12)),
+                                          ),
                                           child: Padding(
-                                            padding: const EdgeInsets.all(8.0),
-                                            child: Tooltip(
-                                              message: strings.get('tooltip_delete_page'),
-                                              child: const Icon(
-                                                Icons.delete_outline_rounded,
-                                                size: 20,
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 10,
+                                              vertical: 6,
+                                            ),
+                                            child: Text(
+                                              strings.pageOf(index + 1, _pages.length),
+                                              style: const TextStyle(
                                                 color: Colors.white,
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 12,
                                               ),
                                             ),
                                           ),
                                         ),
                                       ),
-                                    ),
 
-                                    // 4. Right Side: Semi-Transparent Reorder Arrows Overlay
-                                    if (!settings.hideReorderArrows)
+                                      // 3. Top-Right: Floating Delete Page Button
                                       Positioned(
+                                        top: 8,
                                         right: 8,
-                                        top: 90,
-                                        bottom: 60,
-                                        child: Center(
-                                          child: Container(
-                                            decoration: BoxDecoration(
-                                              color: const Color(0xAA000000),
-                                              borderRadius: BorderRadius.circular(24),
-                                            ),
-                                            padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 2),
-                                            child: Column(
-                                              mainAxisSize: MainAxisSize.min,
-                                              children: [
-                                                IconButton(
-                                                  icon: const Icon(Icons.arrow_upward_rounded, size: 22, color: Colors.white),
-                                                  tooltip: strings.get('tooltip_move_up'),
-                                                  onPressed: isFirst ? null : () => _movePage(index, index - 1),
+                                        child: Material(
+                                          color: const Color(0xAA000000),
+                                          shape: const CircleBorder(),
+                                          child: InkWell(
+                                            customBorder: const CircleBorder(),
+                                            onTap: () => _deletePage(index),
+                                            child: Padding(
+                                              padding: const EdgeInsets.all(8.0),
+                                              child: Tooltip(
+                                                message: strings.get('tooltip_delete_page'),
+                                                child: const Icon(
+                                                  Icons.delete_outline_rounded,
+                                                  size: 20,
+                                                  color: Colors.white,
                                                 ),
-                                                const SizedBox(height: 4),
-                                                IconButton(
-                                                  icon: const Icon(Icons.arrow_downward_rounded, size: 22, color: Colors.white),
-                                                  tooltip: strings.get('tooltip_move_down'),
-                                                  onPressed: isLast ? null : () => _movePage(index, index + 1),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+
+                                      // 4. Right Side: Semi-Transparent Reorder Arrows Overlay
+                                      if (!settings.hideReorderArrows)
+                                        Positioned(
+                                          right: 8,
+                                          top: 90,
+                                          bottom: 60,
+                                          child: Center(
+                                            child: DecoratedBox(
+                                              decoration: const BoxDecoration(
+                                                color: Color(0xAA000000),
+                                                borderRadius: BorderRadius.all(Radius.circular(24)),
+                                              ),
+                                              child: Padding(
+                                                padding: const EdgeInsets.symmetric(
+                                                  vertical: 4,
+                                                  horizontal: 2,
+                                                ),
+                                                child: Column(
+                                                  mainAxisSize: MainAxisSize.min,
+                                                  children: [
+                                                    IconButton(
+                                                      icon: const Icon(
+                                                        Icons.arrow_upward_rounded,
+                                                        size: 22,
+                                                        color: Colors.white,
+                                                      ),
+                                                      tooltip: strings.get('tooltip_move_up'),
+                                                      onPressed: isFirst
+                                                          ? null
+                                                          : () => _movePage(index, index - 1),
+                                                    ),
+                                                    const SizedBox(height: 4),
+                                                    IconButton(
+                                                      icon: const Icon(
+                                                        Icons.arrow_downward_rounded,
+                                                        size: 22,
+                                                        color: Colors.white,
+                                                      ),
+                                                      tooltip: strings.get('tooltip_move_down'),
+                                                      onPressed: isLast
+                                                          ? null
+                                                          : () => _movePage(index, index + 1),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+
+                                      // 5. Bottom Overlay: "Tap to crop or rotate" bar
+                                      Positioned(
+                                        bottom: 0,
+                                        left: 0,
+                                        right: 0,
+                                        child: ColoredBox(
+                                          color: const Color(0xB3000000),
+                                          child: Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                              vertical: 8,
+                                              horizontal: 16,
+                                            ),
+                                            child: Row(
+                                              mainAxisAlignment: MainAxisAlignment.center,
+                                              children: [
+                                                const Icon(
+                                                  Icons.crop_rotate_rounded,
+                                                  size: 16,
+                                                  color: Colors.white,
+                                                ),
+                                                const SizedBox(width: 8),
+                                                Text(
+                                                  strings.get('tap_to_edit'),
+                                                  style: const TextStyle(
+                                                    color: Colors.white,
+                                                    fontWeight: FontWeight.w600,
+                                                    fontSize: 13,
+                                                    letterSpacing: 0.3,
+                                                  ),
                                                 ),
                                               ],
                                             ),
                                           ),
                                         ),
                                       ),
-
-                                    // 5. Bottom Overlay: "Tap to edit" bar
-                                    Positioned(
-                                      bottom: 0,
-                                      left: 0,
-                                      right: 0,
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
-                                        color: const Color(0xB3000000),
-                                        child: Row(
-                                          mainAxisAlignment: MainAxisAlignment.center,
-                                          children: [
-                                            const Icon(Icons.edit_rounded, size: 16, color: Colors.white),
-                                            const SizedBox(width: 8),
-                                            Text(
-                                              strings.get('tap_to_edit'),
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontWeight: FontWeight.w600,
-                                                fontSize: 13,
-                                                letterSpacing: 0.3,
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ],
+                                    ],
+                                  ),
                                 ),
                               ),
                             );
@@ -644,9 +636,8 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                                         size: 16,
                                         color: page.mergedWithNext ? Colors.white : primaryColor,
                                       ),
-                                      backgroundColor: page.mergedWithNext
-                                          ? primaryColor
-                                          : theme.cardColor,
+                                      backgroundColor:
+                                          page.mergedWithNext ? primaryColor : theme.cardColor,
                                       label: Text(
                                         strings.get('merge_next'),
                                         style: TextStyle(
@@ -675,11 +666,11 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
               padding: const EdgeInsets.all(16.0),
               decoration: BoxDecoration(
                 color: theme.cardColor,
-                boxShadow: [
+                boxShadow: const [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.08),
+                    color: Color(0x14000000),
                     blurRadius: 6,
-                    offset: const Offset(0, -2),
+                    offset: Offset(0, -2),
                   )
                 ],
               ),
@@ -688,7 +679,7 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                   Expanded(
                     flex: 2,
                     child: OutlinedButton.icon(
-                      onPressed: _isGeneratingPdf ? null : _addMorePhotos,
+                      onPressed: (_isGeneratingPdf || _isLoading) ? null : _addMorePhotos,
                       icon: const Icon(Icons.add_photo_alternate_rounded, size: 20),
                       label: FittedBox(
                         child: Text(
@@ -702,7 +693,8 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                   Expanded(
                     flex: 3,
                     child: ElevatedButton.icon(
-                      onPressed: (_pages.isEmpty || _isGeneratingPdf) ? null : _onStartPdfCreation,
+                      onPressed:
+                          (_pages.isEmpty || _isGeneratingPdf || _isLoading) ? null : _onStartPdfCreation,
                       icon: const Icon(Icons.picture_as_pdf_rounded, size: 22),
                       label: FittedBox(
                         child: Text(

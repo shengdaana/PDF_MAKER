@@ -19,6 +19,8 @@ class PdfDetailScreen extends StatefulWidget {
 class _PdfDetailScreenState extends State<PdfDetailScreen> {
   late File _currentFile;
   late String _currentFileName;
+  int? _fileSizeBytes;
+  DateTime? _fileModified;
   List<Uint8List> _pagePreviews = [];
   bool _isLoadingPreviews = true;
 
@@ -36,6 +38,10 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
 
     try {
       if (await _currentFile.exists()) {
+        final stat = await _currentFile.stat();
+        _fileSizeBytes = stat.size;
+        _fileModified = stat.modified;
+
         final Uint8List pdfBytes = await _currentFile.readAsBytes();
         int count = 0;
         await for (final page in Printing.raster(pdfBytes, dpi: 100)) {
@@ -228,8 +234,6 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
     final theme = Theme.of(context);
     final primaryColor = theme.colorScheme.primary;
 
-    final stat = _currentFile.existsSync() ? _currentFile.statSync() : null;
-
     return Scaffold(
       appBar: AppBar(
         title: Text(
@@ -288,9 +292,9 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
                               maxLines: 1,
                             ),
                             const SizedBox(height: 4),
-                            if (stat != null)
+                            if (_fileSizeBytes != null && _fileModified != null)
                               Text(
-                                '${_formatFileSize(stat.size)} • ${_formatDate(stat.modified)}',
+                                '${_formatFileSize(_fileSizeBytes!)} • ${_formatDate(_fileModified!)}',
                                 style: TextStyle(
                                   fontSize: 12,
                                   color: theme.colorScheme.onSurface.withOpacity(0.6),
@@ -353,6 +357,8 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
                                     Image.memory(
                                       _pagePreviews[index],
                                       fit: BoxFit.contain,
+                                      cacheWidth: 600,
+                                      filterQuality: FilterQuality.low,
                                     ),
                                     Positioned(
                                       top: 8,

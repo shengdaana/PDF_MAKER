@@ -33,7 +33,6 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
 
   late PdfPageSizing _pageSizing;
   bool _enableOcr = false;
-  bool _bulkEnhance = false;
   bool _initializedDeps = false;
 
   @override
@@ -81,6 +80,7 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
           PdfPageItem(
             id: 'page_${DateTime.now().millisecondsSinceEpoch}_$pageIndex',
             sourcePath: imagePath,
+            basePreviewPath: imagePath,
             currentPreviewPath: imagePath,
           ),
         );
@@ -109,21 +109,41 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
   Future<void> _addMorePhotos() async {
     try {
       final picked = await _picker.pickMultiImage(imageQuality: 100);
-      if (picked.isNotEmpty) {
-        final double savedScrollOffset =
-            _scrollController.hasClients ? _scrollController.offset : 0.0;
+      if (picked.isEmpty) return;
 
+      final double savedScrollOffset =
+          _scrollController.hasClients ? _scrollController.offset : 0.0;
+
+      setState(() => _isLoading = true);
+
+      final tempDir = await getTemporaryDirectory();
+      final String tempDirPath = tempDir.path;
+      final int nowMs = DateTime.now().millisecondsSinceEpoch;
+      final List<PdfPageItem> added = [];
+
+      for (int i = 0; i < picked.length; i++) {
+        final String path = picked[i].path;
+        final String id = 'added_${nowMs}_$i';
+        final String thumbPath = await ImageProcessor.generateDownsampledThumbnail(
+          sourcePath: path,
+          tempDirPath: tempDirPath,
+          pageId: id,
+          maxDimension: 960,
+        );
+        added.add(
+          PdfPageItem(
+            id: id,
+            sourcePath: path,
+            basePreviewPath: thumbPath,
+            currentPreviewPath: thumbPath,
+          ),
+        );
+      }
+
+      if (mounted) {
         setState(() {
-          for (int i = 0; i < picked.length; i++) {
-            _pages.add(
-              PdfPageItem(
-                id: 'added_${DateTime.now().millisecondsSinceEpoch}_$i',
-                sourcePath: picked[i].path,
-                currentPreviewPath: picked[i].path,
-                isEnhanced: _bulkEnhance,
-              ),
-            );
-          }
+          _pages.addAll(added);
+          _isLoading = false;
         });
 
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -134,6 +154,9 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
       }
     } catch (e) {
       debugPrint('Error picking additional images: $e');
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 
@@ -190,93 +213,30 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
   Future<void> _rotatePage(int index) async {
     final page = _pages[index];
     final int newRotation = (page.rotationDegrees + 90) % 360;
-    final CropQuad? rotatedQuad = page.cropQuad != null
+    final CropQuad rotatedQuad = page.cropQuad != null
         ? ImageProcessor.rotateQuad(page.cropQuad!, 90)
-        : null;
+        : CropQuad.full;
 
     setState(() => _isLoading = true);
     try {
-      final sourceFile = File(page.sourcePath);
-      final raw = await ImageProcessor.loadAndNormalizeExif(sourceFile);
-      if (raw != null) {
-        final processed = ImageProcessor.processPipeline(
-          sourceImage: raw,
-          rotationDegrees: newRotation,
-          cropQuad: rotatedQuad,
-          normalizedCropRect: page.normalizedCropRect,
-          enhanceMode: page.enhanceMode,
-          isEnhanced: page.isEnhanced,
-        );
-        final newPreview = await ImageProcessor.saveToTempPreviewFile(
-          processed,
-          'rot_${page.id}',
-        );
-        page.rotationDegrees = newRotation;
-        page.cropQuad = rotatedQuad;
-        page.currentPreviewPath = newPreview;
-      }
+      final tempDir = await getTemporaryDirectory();
+      final String newPreview = await ImageProcessor.confirmEditsInIsolate(
+        sourcePath: page.sourcePath,
+        basePreviewPath: page.basePreviewPath,
+        tempDirPath: tempDir.path,
+        pageId: page.id,
+        rotationDegrees: newRotation,
+        cropQuad: rotatedQuad,
+      );
+
+      page.rotationDegrees = newRotation;
+      page.cropQuad = rotatedQuad.isFullFrame ? null : rotatedQuad;
+      page.currentPreviewPath = newPreview;
     } catch (e) {
       debugPrint('Error rotating page: $e');
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
-      }
-    }
-  }
-
-  Future<void> _toggleBulkEnhance(bool enabled) async {
-    setState(() {
-      _bulkEnhance = enabled;
-      for (final page in _pages) {
-        page.enhanceMode = enabled ? EnhanceMode.originalColor : EnhanceMode.none;
-      }
-    });
-    await _reprocessAllPreviews();
-  }
-
-  Future<void> _reprocessAllPreviews() async {
-    final double savedScrollOffset =
-        _scrollController.hasClients ? _scrollController.offset : 0.0;
-    setState(() => _isLoading = true);
-
-    try {
-      for (final page in _pages) {
-        if (page.enhanceMode == EnhanceMode.none &&
-            page.rotationDegrees == 0 &&
-            page.cropQuad == null &&
-            page.normalizedCropRect == null) {
-          page.currentPreviewPath = page.sourcePath;
-          continue;
-        }
-
-        final file = File(page.sourcePath);
-        final raw = await ImageProcessor.loadAndNormalizeExif(file);
-        if (raw != null) {
-          final processed = ImageProcessor.processPipeline(
-            sourceImage: raw,
-            rotationDegrees: page.rotationDegrees,
-            cropQuad: page.cropQuad,
-            normalizedCropRect: page.normalizedCropRect,
-            enhanceMode: page.enhanceMode,
-            isEnhanced: page.isEnhanced,
-          );
-          final preview = await ImageProcessor.saveToTempPreviewFile(
-            processed,
-            'prev_${page.id}',
-          );
-          page.currentPreviewPath = preview;
-        }
-      }
-    } catch (e) {
-      debugPrint('Error reprocessing previews: $e');
-    } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (_scrollController.hasClients) {
-            _scrollController.jumpTo(savedScrollOffset);
-          }
-        });
       }
     }
   }
@@ -395,7 +355,7 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Top Editor Toolbar Card
+            // Top Editor Toolbar Card (FIX 1: Enhance All removed)
             Card(
               margin: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
               elevation: 1,
@@ -417,12 +377,18 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                           segments: [
                             ButtonSegment(
                               value: PdfPageSizing.a4Standard,
-                              label: Text(strings.get('sizing_a4_short'), style: const TextStyle(fontSize: 12)),
+                              label: Text(
+                                strings.get('sizing_a4_short'),
+                                style: const TextStyle(fontSize: 12),
+                              ),
                               icon: const Icon(Icons.description_outlined, size: 16),
                             ),
                             ButtonSegment(
                               value: PdfPageSizing.freeDynamic,
-                              label: Text(strings.get('sizing_orig_short'), style: const TextStyle(fontSize: 12)),
+                              label: Text(
+                                strings.get('sizing_orig_short'),
+                                style: const TextStyle(fontSize: 12),
+                              ),
                               icon: const Icon(Icons.fit_screen_outlined, size: 16),
                             ),
                           ],
@@ -436,74 +402,28 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                       ],
                     ),
                     const Divider(height: 12),
-
                     Row(
                       children: [
-                        Expanded(
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(8),
-                            onTap: () {
-                              setState(() => _enableOcr = !_enableOcr);
-                            },
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 4.0),
-                              child: Row(
-                                children: [
-                                  Icon(Icons.document_scanner_rounded,
-                                      size: 18, color: _enableOcr ? primaryColor : Colors.grey),
-                                  const SizedBox(width: 6),
-                                  Expanded(
-                                    child: Text(
-                                      strings.get('ocr_search_short'),
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: _enableOcr ? FontWeight.bold : FontWeight.normal,
-                                      ),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                  Checkbox(
-                                    value: _enableOcr,
-                                    onChanged: (v) => setState(() => _enableOcr = v ?? false),
-                                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
+                        Icon(
+                          Icons.document_scanner_rounded,
+                          size: 18,
+                          color: _enableOcr ? primaryColor : Colors.grey,
                         ),
                         const SizedBox(width: 8),
-
                         Expanded(
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(8),
-                            onTap: () => _toggleBulkEnhance(!_bulkEnhance),
-                            child: Padding(
-                              padding: const EdgeInsets.symmetric(vertical: 4.0),
-                              child: Row(
-                                children: [
-                                  Icon(Icons.auto_fix_high_rounded,
-                                      size: 18, color: _bulkEnhance ? primaryColor : Colors.grey),
-                                  const SizedBox(width: 6),
-                                  Expanded(
-                                    child: Text(
-                                      strings.get('bw_scan_short'),
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: _bulkEnhance ? FontWeight.bold : FontWeight.normal,
-                                      ),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ),
-                                  Checkbox(
-                                    value: _bulkEnhance,
-                                    onChanged: (v) => _toggleBulkEnhance(v ?? false),
-                                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                  ),
-                                ],
-                              ),
+                          child: Text(
+                            strings.get('toggle_ocr'),
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: _enableOcr ? FontWeight.bold : FontWeight.w500,
                             ),
+                            overflow: TextOverflow.ellipsis,
                           ),
+                        ),
+                        Switch(
+                          value: _enableOcr,
+                          onChanged: (v) => setState(() => _enableOcr = v),
+                          activeColor: primaryColor,
                         ),
                       ],
                     ),
@@ -552,103 +472,123 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
                             final isFirst = index == 0;
                             final isLast = index == _pages.length - 1;
 
-                            return Card(
-                              key: ValueKey(page.id),
-                              margin: const EdgeInsets.symmetric(vertical: 8.0),
-                              clipBehavior: Clip.antiAlias,
-                              elevation: 2,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(16),
-                                side: BorderSide(
-                                  color: theme.colorScheme.outline.withOpacity(0.15),
+                            return RepaintBoundary(
+                              child: Card(
+                                key: ValueKey(page.id),
+                                margin: const EdgeInsets.symmetric(vertical: 8.0),
+                                clipBehavior: Clip.antiAlias,
+                                elevation: 2,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(16),
+                                  side: BorderSide(
+                                    color: theme.colorScheme.outline.withOpacity(0.15),
+                                  ),
                                 ),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  GestureDetector(
-                                    onTap: () => _openEditPage(index),
-                                    child: Stack(
-                                      children: [
-                                        Container(
-                                          width: double.infinity,
-                                          height: 230,
-                                          color: Colors.black.withOpacity(0.04),
-                                          child: Center(
-                                            child: Image.file(
-                                              File(page.currentPreviewPath),
-                                              fit: BoxFit.contain,
-                                              width: double.infinity,
-                                              height: 230,
-                                              key: ValueKey(page.currentPreviewPath),
-                                            ),
-                                          ),
-                                        ),
-                                        Positioned(
-                                          top: 10,
-                                          left: 10,
-                                          child: Container(
-                                            padding: const EdgeInsets.symmetric(
-                                                horizontal: 10, vertical: 5),
-                                            decoration: BoxDecoration(
-                                              color: Colors.black.withOpacity(0.72),
-                                              borderRadius: BorderRadius.circular(12),
-                                            ),
-                                            child: Text(
-                                              strings.pageOf(index + 1, _pages.length),
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontWeight: FontWeight.bold,
-                                                fontSize: 12,
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                                  children: [
+                                    GestureDetector(
+                                      onTap: () => _openEditPage(index),
+                                      child: Stack(
+                                        children: [
+                                          Container(
+                                            width: double.infinity,
+                                            height: 230,
+                                            color: Colors.black.withOpacity(0.04),
+                                            child: Center(
+                                              child: Image.file(
+                                                File(page.currentPreviewPath),
+                                                fit: BoxFit.contain,
+                                                width: double.infinity,
+                                                height: 230,
+                                                cacheWidth: 800,
+                                                filterQuality: FilterQuality.low,
+                                                gaplessPlayback: true,
+                                                key: ValueKey(page.currentPreviewPath),
                                               ),
                                             ),
                                           ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 8.0, vertical: 4.0),
-                                    color: theme.cardColor,
-                                    child: Row(
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        TextButton.icon(
-                                          style: TextButton.styleFrom(
-                                            padding: const EdgeInsets.symmetric(
-                                                horizontal: 8, vertical: 4),
-                                            minimumSize: Size.zero,
+                                          Positioned(
+                                            top: 10,
+                                            left: 10,
+                                            child: DecoratedBox(
+                                              decoration: const BoxDecoration(
+                                                color: Color(0xB8000000),
+                                                borderRadius: BorderRadius.all(Radius.circular(12)),
+                                              ),
+                                              child: Padding(
+                                                padding: const EdgeInsets.symmetric(
+                                                  horizontal: 10,
+                                                  vertical: 5,
+                                                ),
+                                                child: Text(
+                                                  strings.pageOf(index + 1, _pages.length),
+                                                  style: const TextStyle(
+                                                    color: Colors.white,
+                                                    fontWeight: FontWeight.bold,
+                                                    fontSize: 12,
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
                                           ),
-                                          onPressed: () => _openEditPage(index),
-                                          icon: const Icon(Icons.crop_rotate_rounded, size: 18),
-                                          label: Text(strings.get('edit_crop_btn')),
-                                        ),
-                                        IconButton(
-                                          icon: const Icon(Icons.rotate_right_rounded, size: 20),
-                                          tooltip: strings.get('btn_rotate_90'),
-                                          onPressed: () => _rotatePage(index),
-                                        ),
-                                        IconButton(
-                                          icon: const Icon(Icons.arrow_upward_rounded, size: 18),
-                                          tooltip: strings.get('tooltip_move_up'),
-                                          onPressed: isFirst ? null : () => _movePage(index, index - 1),
-                                        ),
-                                        IconButton(
-                                          icon: const Icon(Icons.arrow_downward_rounded, size: 18),
-                                          tooltip: strings.get('tooltip_move_down'),
-                                          onPressed: isLast ? null : () => _movePage(index, index + 1),
-                                        ),
-                                        IconButton(
-                                          icon: const Icon(Icons.delete_outline_rounded,
-                                              size: 20, color: Colors.redAccent),
-                                          tooltip: strings.get('tooltip_delete_page'),
-                                          onPressed: () => _deletePage(index),
-                                        ),
-                                      ],
+                                        ],
+                                      ),
                                     ),
-                                  ),
-                                ],
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 8.0,
+                                        vertical: 4.0,
+                                      ),
+                                      color: theme.cardColor,
+                                      child: Row(
+                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          TextButton.icon(
+                                            style: TextButton.styleFrom(
+                                              padding: const EdgeInsets.symmetric(
+                                                horizontal: 8,
+                                                vertical: 4,
+                                              ),
+                                              minimumSize: Size.zero,
+                                            ),
+                                            onPressed: () => _openEditPage(index),
+                                            icon: const Icon(Icons.crop_rotate_rounded, size: 18),
+                                            label: Text(strings.get('edit_crop_btn')),
+                                          ),
+                                          IconButton(
+                                            icon: const Icon(Icons.rotate_right_rounded, size: 20),
+                                            tooltip: strings.get('btn_rotate_90'),
+                                            onPressed: () => _rotatePage(index),
+                                          ),
+                                          IconButton(
+                                            icon: const Icon(Icons.arrow_upward_rounded, size: 18),
+                                            tooltip: strings.get('tooltip_move_up'),
+                                            onPressed: isFirst
+                                                ? null
+                                                : () => _movePage(index, index - 1),
+                                          ),
+                                          IconButton(
+                                            icon: const Icon(Icons.arrow_downward_rounded, size: 18),
+                                            tooltip: strings.get('tooltip_move_down'),
+                                            onPressed: isLast
+                                                ? null
+                                                : () => _movePage(index, index + 1),
+                                          ),
+                                          IconButton(
+                                            icon: const Icon(
+                                              Icons.delete_outline_rounded,
+                                              size: 20,
+                                              color: Colors.redAccent,
+                                            ),
+                                            tooltip: strings.get('tooltip_delete_page'),
+                                            onPressed: () => _deletePage(index),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
                               ),
                             );
                           },
@@ -659,11 +599,11 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
               padding: const EdgeInsets.all(14.0),
               decoration: BoxDecoration(
                 color: theme.cardColor,
-                boxShadow: [
+                boxShadow: const [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.08),
+                    color: Color(0x14000000),
                     blurRadius: 6,
-                    offset: const Offset(0, -2),
+                    offset: Offset(0, -2),
                   )
                 ],
               ),

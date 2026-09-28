@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -28,12 +29,42 @@ class PdfGenerationResult {
   });
 }
 
+class _OcrLineBox {
+  final String text;
+  final double left;
+  final double top;
+  final double width;
+  final double height;
+
+  const _OcrLineBox({
+    required this.text,
+    required this.left,
+    required this.top,
+    required this.width,
+    required this.height,
+  });
+}
+
+class _PreparedPdfPage {
+  final Uint8List compressedBytes;
+  final double width;
+  final double height;
+  final List<_OcrLineBox> ocrLines;
+
+  const _PreparedPdfPage({
+    required this.compressedBytes,
+    required this.width,
+    required this.height,
+    required this.ocrLines,
+  });
+}
+
 class PdfService {
   static const MethodChannel _nativeChannel =
       MethodChannel('com.introbird.pdfmakerflutter/native_files');
 
   /// Opens a generated PDF file using Android's FileProvider (content:// URI) and
-  /// standard ACTION_VIEW intent — requires zero MANAGE_EXTERNAL_STORAGE permission (FIX 3).
+  /// standard ACTION_VIEW intent — requires zero MANAGE_EXTERNAL_STORAGE permission.
   static Future<void> openPdfFile(BuildContext context, File file) async {
     final strings = AppStateScope.of(context).strings;
     try {
@@ -57,7 +88,7 @@ class PdfService {
     }
   }
 
-  /// Resolves the public device storage directory (FIX 4):
+  /// Resolves the public device storage directory:
   /// Primary target: /storage/emulated/0/Documents/PDF Maker/
   /// Files stored here reside in public shared storage and ALWAYS survive app uninstallation.
   static Future<Directory> getPdfStorageDirectory() async {
@@ -125,43 +156,37 @@ class PdfService {
     return dirs;
   }
 
-  /// Helper that loads and processes a single PdfPageItem at full resolution.
-  static Future<img.Image?> _resolveProcessedPageImage(PdfPageItem pageItem) async {
-    final File sourceFile = File(pageItem.sourcePath);
-    if (await sourceFile.exists()) {
-      final img.Image? normalized = await ImageProcessor.loadAndNormalizeExif(sourceFile);
-      if (normalized != null) {
-        final bool hasEdits = pageItem.rotationDegrees % 360 != 0 ||
-            pageItem.cropQuad != null ||
-            pageItem.normalizedCropRect != null ||
-            pageItem.enhanceMode != EnhanceMode.none;
-
-        if (!hasEdits) {
-          return normalized;
-        }
-
-        return ImageProcessor.processPipeline(
-          sourceImage: normalized,
-          rotationDegrees: pageItem.rotationDegrees,
-          cropQuad: pageItem.cropQuad,
-          normalizedCropRect: pageItem.normalizedCropRect,
-          enhanceMode: pageItem.enhanceMode,
-          isEnhanced: pageItem.isEnhanced,
-        );
-      }
+  /// Synchronous helper intended to run inside `Isolate.run`:
+  /// Loads and processes a single page at full resolution.
+  /// FIX 2: If the user did not rotate and did not move crop corners away from full-frame,
+  /// returns the EXIF-normalized original image directly as-is without perspective warp.
+  static img.Image? _resolvePageImageSync({
+    required String sourcePath,
+    required String fallbackPreviewPath,
+    required int rotationDegrees,
+    required CropQuad? cropQuad,
+    required Rect? normalizedCropRect,
+  }) {
+    final img.Image? normalized = ImageProcessor.decodeAndNormalizeSync(sourcePath);
+    if (normalized != null) {
+      return ImageProcessor.processPipeline(
+        sourceImage: normalized,
+        rotationDegrees: rotationDegrees,
+        cropQuad: cropQuad,
+        normalizedCropRect: normalizedCropRect,
+      );
     }
 
-    // Fallback to preview file if source is unavailable
-    final File previewFile = File(pageItem.currentPreviewPath);
-    if (await previewFile.exists()) {
-      final Uint8List rawBytes = await previewFile.readAsBytes();
+    final previewFile = File(fallbackPreviewPath);
+    if (previewFile.existsSync()) {
+      final Uint8List rawBytes = previewFile.readAsBytesSync();
       return img.decodeImage(rawBytes);
     }
     return null;
   }
 
   /// Vertically stitches two images into one combined page image when Merge with Next Page is active.
-  static img.Image _stitchImagesVertically(img.Image top, img.Image bottom) {
+  static img.Image _stitchImagesVerticallySync(img.Image top, img.Image bottom) {
     final int targetWidth = top.width >= bottom.width ? top.width : bottom.width;
     final img.Image topScaled = top.width == targetWidth
         ? top
@@ -179,115 +204,83 @@ class PdfService {
     return combined;
   }
 
-  /// Generates a complete PDF document from the given list of pages with
-  /// memory-efficient processing and saves to public device storage (FIX 4).
-  static Future<PdfGenerationResult> generatePdf({
-    required List<PdfPageItem> pages,
-    required AppSettings settings,
-    required bool enableOcr,
-    PdfCompressionProfile compressionProfile = PdfCompressionProfile.standard,
-    bool isHdQuality = false,
-    Function(double progress, String status)? onProgress,
+  /// Processes and compresses a single page (and optional merged next page) inside a background isolate (FIX 3).
+  static Future<CompressedPageData?> _processAndCompressPageInIsolate({
+    required String sourcePath,
+    required String fallbackPreviewPath,
+    required int rotationDegrees,
+    required CropQuad? cropQuad,
+    required Rect? normalizedCropRect,
+    required PdfCompressionProfile profile,
+    String? nextSourcePath,
+    String? nextFallbackPreviewPath,
+    int nextRotationDegrees = 0,
+    CropQuad? nextCropQuad,
+    Rect? nextNormalizedCropRect,
   }) async {
-    final strings = AppStrings(settings.language);
-    final PdfCompressionProfile effectiveProfile = isHdQuality
-        ? PdfCompressionProfile.hdOriginal
-        : compressionProfile;
-
-    final pdf = pw.Document();
-    // 100% On-Device Offline OCR (Latin script bundled model, zero network requests - FIX 8)
-    final TextRecognizer? textRecognizer = enableOcr
-        ? TextRecognizer(script: TextRecognitionScript.latin)
-        : null;
-
-    final int totalPages = pages.length;
-    int renderedPageCount = 0;
-
-    for (int i = 0; i < totalPages; i++) {
-      final pageItem = pages[i];
-      final double progress = (i + 1) / (totalPages + 1);
-
-      if (onProgress != null) {
-        onProgress(progress, strings.processingPage(i + 1, totalPages));
-      }
-
-      // 1. Load image and bake current adjustments from clean full-res source
-      img.Image? decodedImage = await _resolveProcessedPageImage(pageItem);
-      if (decodedImage == null) continue;
-
-      // Support optional vertical merge with next page
-      if (settings.mergePagesBetweenPages && pageItem.mergedWithNext && (i + 1) < totalPages) {
-        final img.Image? nextImage = await _resolveProcessedPageImage(pages[i + 1]);
-        if (nextImage != null) {
-          decodedImage = _stitchImagesVertically(decodedImage, nextImage);
-          i++; // Consume merged next page
-        }
-      }
-
-      // 2. Compress image using per-image profile (~1800px @ 70% for Standard)
-      final Uint8List compressedBytes = ImageProcessor.compressForPdf(
-        decodedImage,
-        profile: effectiveProfile,
+    return Isolate.run(() {
+      img.Image? pageImage = _resolvePageImageSync(
+        sourcePath: sourcePath,
+        fallbackPreviewPath: fallbackPreviewPath,
+        rotationDegrees: rotationDegrees,
+        cropQuad: cropQuad,
+        normalizedCropRect: normalizedCropRect,
       );
-      final img.Image? compressedDecoded = img.decodeImage(compressedBytes);
-      final double imgWidth = (compressedDecoded ?? decodedImage).width.toDouble();
-      final double imgHeight = (compressedDecoded ?? decodedImage).height.toDouble();
+      if (pageImage == null) return null;
 
-      final pw.MemoryImage pwImage = pw.MemoryImage(compressedBytes);
-
-      // 3. OCR Layer Extraction (100% on-device) on the exact rendered page image
-      RecognizedText? recognizedText;
-      if (enableOcr && textRecognizer != null) {
-        if (onProgress != null) {
-          onProgress(progress, strings.runningOcrOnPage(renderedPageCount + 1));
-        }
-        File? tempOcrFile;
-        try {
-          final tempDir = await getTemporaryDirectory();
-          tempOcrFile = File('${tempDir.path}/ocr_tmp_${DateTime.now().microsecondsSinceEpoch}_$i.jpg');
-          await tempOcrFile.writeAsBytes(compressedBytes);
-          final inputImage = InputImage.fromFilePath(tempOcrFile.path);
-          recognizedText = await textRecognizer.processImage(inputImage);
-        } catch (e) {
-          debugPrint('OCR extraction error on page ${i + 1}: $e');
-        } finally {
-          try {
-            if (tempOcrFile != null && await tempOcrFile.exists()) {
-              await tempOcrFile.delete();
-            }
-          } catch (_) {}
+      if (nextSourcePath != null && nextFallbackPreviewPath != null) {
+        final img.Image? nextImage = _resolvePageImageSync(
+          sourcePath: nextSourcePath,
+          fallbackPreviewPath: nextFallbackPreviewPath,
+          rotationDegrees: nextRotationDegrees,
+          cropQuad: nextCropQuad,
+          normalizedCropRect: nextNormalizedCropRect,
+        );
+        if (nextImage != null) {
+          pageImage = _stitchImagesVerticallySync(pageImage, nextImage);
         }
       }
 
-      renderedPageCount++;
+      // Compress and return dimensions directly without re-decoding the JPEG (FIX 3)
+      return ImageProcessor.compressForPdfWithDimensions(pageImage, profile: profile);
+    });
+  }
 
-      // 4. Page Layout Mode (Free / Dynamic vs A4 Standard)
-      final bool isFreeDynamic = settings.pageSizing == PdfPageSizing.freeDynamic;
-      final PdfPageFormat pageFormat = isFreeDynamic
-          ? PdfPageFormat(imgWidth, imgHeight, marginAll: 0)
-          : PdfPageFormat.a4;
+  /// Builds the `pw.Document` and serializes `pdf.save()` inside a background isolate (FIX 3).
+  static Future<Uint8List> _buildPdfBytesInIsolate({
+    required List<_PreparedPdfPage> preparedPages,
+    required bool isFreeDynamic,
+  }) async {
+    return Isolate.run(() async {
+      final pdf = pw.Document();
 
-      pdf.addPage(
-        pw.Page(
-          pageFormat: pageFormat,
-          build: (pw.Context context) {
-            final double pageWidth = context.page.pageFormat.availableWidth;
-            final double pageHeight = context.page.pageFormat.availableHeight;
+      for (final pageData in preparedPages) {
+        final double imgWidth = pageData.width;
+        final double imgHeight = pageData.height;
+        final pw.MemoryImage pwImage = pw.MemoryImage(pageData.compressedBytes);
 
-            final List<pw.Widget> stackChildren = [];
+        final PdfPageFormat pageFormat = isFreeDynamic
+            ? PdfPageFormat(imgWidth, imgHeight, marginAll: 0)
+            : PdfPageFormat.a4;
 
-            // A. OCR Invisible Text Layer (Positioned for copy/search capability)
-            if (recognizedText != null && recognizedText.blocks.isNotEmpty) {
-              final scaleX = pageWidth / imgWidth;
-              final scaleY = pageHeight / imgHeight;
+        pdf.addPage(
+          pw.Page(
+            pageFormat: pageFormat,
+            build: (pw.Context context) {
+              final double pageWidth = context.page.pageFormat.availableWidth;
+              final double pageHeight = context.page.pageFormat.availableHeight;
 
-              for (final block in recognizedText.blocks) {
-                for (final line in block.lines) {
-                  final rect = line.boundingBox;
-                  final left = rect.left * scaleX;
-                  final top = rect.top * scaleY;
-                  final width = rect.width * scaleX;
-                  final height = rect.height * scaleY;
+              final List<pw.Widget> stackChildren = [];
+
+              if (pageData.ocrLines.isNotEmpty) {
+                final scaleX = pageWidth / imgWidth;
+                final scaleY = pageHeight / imgHeight;
+
+                for (final line in pageData.ocrLines) {
+                  final left = line.left * scaleX;
+                  final top = line.top * scaleY;
+                  final width = line.width * scaleX;
+                  final height = line.height * scaleY;
 
                   stackChildren.add(
                     pw.Positioned(
@@ -308,29 +301,137 @@ class PdfService {
                   );
                 }
               }
-            }
 
-            // B. Visible Document Photo
-            if (isFreeDynamic) {
-              stackChildren.add(
-                pw.Positioned(
-                  left: 0,
-                  top: 0,
-                  right: 0,
-                  bottom: 0,
-                  child: pw.Image(pwImage, fit: pw.BoxFit.fill),
+              if (isFreeDynamic) {
+                stackChildren.add(
+                  pw.Positioned(
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: pw.Image(pwImage, fit: pw.BoxFit.fill),
+                  ),
+                );
+              } else {
+                stackChildren.add(
+                  pw.Center(
+                    child: pw.Image(pwImage, fit: pw.BoxFit.contain),
+                  ),
+                );
+              }
+
+              return pw.Stack(children: stackChildren);
+            },
+          ),
+        );
+      }
+
+      return pdf.save();
+    });
+  }
+
+  /// Generates a complete PDF document with all heavy image decoding, perspective warping,
+  /// compression, and PDF serialization offloaded to background isolates (FIX 2 & FIX 3).
+  static Future<PdfGenerationResult> generatePdf({
+    required List<PdfPageItem> pages,
+    required AppSettings settings,
+    required bool enableOcr,
+    PdfCompressionProfile compressionProfile = PdfCompressionProfile.standard,
+    bool isHdQuality = false,
+    Function(double progress, String status)? onProgress,
+  }) async {
+    final strings = AppStrings(settings.language);
+    final PdfCompressionProfile effectiveProfile = isHdQuality
+        ? PdfCompressionProfile.hdOriginal
+        : compressionProfile;
+
+    // Lazily initialize on-device OCR only when generating a PDF with OCR enabled (FIX 3)
+    final TextRecognizer? textRecognizer = enableOcr
+        ? TextRecognizer(script: TextRecognitionScript.latin)
+        : null;
+
+    final int totalPages = pages.length;
+    final List<_PreparedPdfPage> preparedPages = [];
+    final Directory tempDir = await getTemporaryDirectory();
+
+    for (int i = 0; i < totalPages; i++) {
+      final pageItem = pages[i];
+      final double progress = (i + 1) / (totalPages + 1);
+
+      if (onProgress != null) {
+        onProgress(progress, strings.processingPage(i + 1, totalPages));
+      }
+
+      final bool mergeNext =
+          settings.mergePagesBetweenPages && pageItem.mergedWithNext && (i + 1) < totalPages;
+      final PdfPageItem? nextItem = mergeNext ? pages[i + 1] : null;
+      if (mergeNext) {
+        i++; // Consume merged next page
+      }
+
+      // 1. Decode, EXIF-normalize, apply rotation/crop (only if edited), and compress in Isolate (FIX 2 & FIX 3)
+      final CompressedPageData? compressed = await _processAndCompressPageInIsolate(
+        sourcePath: pageItem.sourcePath,
+        fallbackPreviewPath: pageItem.currentPreviewPath,
+        rotationDegrees: pageItem.rotationDegrees,
+        cropQuad: pageItem.cropQuad,
+        normalizedCropRect: pageItem.normalizedCropRect,
+        profile: effectiveProfile,
+        nextSourcePath: nextItem?.sourcePath,
+        nextFallbackPreviewPath: nextItem?.currentPreviewPath,
+        nextRotationDegrees: nextItem?.rotationDegrees ?? 0,
+        nextCropQuad: nextItem?.cropQuad,
+        nextNormalizedCropRect: nextItem?.normalizedCropRect,
+      );
+
+      if (compressed == null) continue;
+
+      // 2. Optional On-Device OCR extraction
+      final List<_OcrLineBox> ocrLines = [];
+      if (enableOcr && textRecognizer != null) {
+        if (onProgress != null) {
+          onProgress(progress, strings.runningOcrOnPage(preparedPages.length + 1));
+        }
+        File? tempOcrFile;
+        try {
+          tempOcrFile = File(
+            '${tempDir.path}/ocr_tmp_${DateTime.now().microsecondsSinceEpoch}_$i.jpg',
+          );
+          await tempOcrFile.writeAsBytes(compressed.bytes);
+          final inputImage = InputImage.fromFilePath(tempOcrFile.path);
+          final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
+
+          for (final block in recognizedText.blocks) {
+            for (final line in block.lines) {
+              final rect = line.boundingBox;
+              ocrLines.add(
+                _OcrLineBox(
+                  text: line.text,
+                  left: rect.left,
+                  top: rect.top,
+                  width: rect.width,
+                  height: rect.height,
                 ),
               );
-            } else {
-              stackChildren.add(
-                pw.Center(
-                  child: pw.Image(pwImage, fit: pw.BoxFit.contain),
-                ),
-              );
             }
+          }
+        } catch (e) {
+          debugPrint('OCR extraction error on page ${i + 1}: $e');
+        } finally {
+          try {
+            if (tempOcrFile != null && await tempOcrFile.exists()) {
+              await tempOcrFile.delete();
+            }
+          } catch (_) {}
+        }
+      }
 
-            return pw.Stack(children: stackChildren);
-          },
+      preparedPages.add(
+        _PreparedPdfPage(
+          compressedBytes: compressed.bytes,
+          width: compressed.width,
+          height: compressed.height,
+          ocrLines: ocrLines,
         ),
       );
     }
@@ -340,10 +441,17 @@ class PdfService {
     }
 
     if (onProgress != null) {
-      onProgress(0.98, strings.get('status_finalizing_pdf'));
+      onProgress(0.95, strings.get('status_finalizing_pdf'));
     }
 
-    // 5. Generate Filename: PDF_YYYYMMDD_HHMMSS.pdf
+    // 3. Build PDF document & serialize bytes in a background isolate (FIX 3)
+    final bool isFreeDynamic = settings.pageSizing == PdfPageSizing.freeDynamic;
+    final Uint8List pdfBytes = await _buildPdfBytesInIsolate(
+      preparedPages: preparedPages,
+      isFreeDynamic: isFreeDynamic,
+    );
+
+    // 4. Generate Filename: PDF_YYYYMMDD_HHMMSS.pdf
     final now = DateTime.now();
     final String timeStamp = '${now.year}'
         '${now.month.toString().padLeft(2, '0')}'
@@ -353,9 +461,7 @@ class PdfService {
         '${now.second.toString().padLeft(2, '0')}';
     final String fileName = 'PDF_$timeStamp.pdf';
 
-    final Uint8List pdfBytes = await pdf.save();
-
-    // 6. Save to Public Device Storage (/storage/emulated/0/Documents/PDF Maker/) (FIX 4)
+    // 5. Save to Public Device Storage (/storage/emulated/0/Documents/PDF Maker/)
     File? savedFile;
     if (Platform.isAndroid) {
       try {
@@ -386,7 +492,7 @@ class PdfService {
     return PdfGenerationResult(
       file: savedFile,
       fileName: fileName,
-      pageCount: renderedPageCount > 0 ? renderedPageCount : totalPages,
+      pageCount: preparedPages.isNotEmpty ? preparedPages.length : totalPages,
       fileSizeBytes: pdfBytes.length,
       savedPath: savedFile.path,
     );

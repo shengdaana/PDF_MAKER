@@ -133,28 +133,20 @@ class _SuccessScreenState extends State<SuccessScreen> {
             children: [
               const SizedBox(height: 12),
 
-              // Header Card: "Your PDF is Created!" with lightweight confirmation fade/scale (FIX 5)
+              // Header Card: "Your PDF is Created!" (FIX 3: lightweight static icon, zero animation overhead)
               Card(
                 elevation: 2,
                 child: Padding(
                   padding: const EdgeInsets.all(24.0),
                   child: Column(
                     children: [
-                      TweenAnimationBuilder<double>(
-                        tween: Tween(begin: 0.75, end: 1.0),
-                        duration: const Duration(milliseconds: 250),
-                        curve: Curves.easeOutBack,
-                        builder: (context, scale, child) {
-                          return Transform.scale(scale: scale, child: child);
-                        },
-                        child: Container(
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: Colors.green.withOpacity(0.15),
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(Icons.check_circle_rounded, color: Colors.green, size: 48),
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.green.withOpacity(0.15),
+                          shape: BoxShape.circle,
                         ),
+                        child: const Icon(Icons.check_circle_rounded, color: Colors.green, size: 48),
                       ),
                       const SizedBox(height: 16),
                       Text(

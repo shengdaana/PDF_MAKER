@@ -10,10 +10,34 @@ enum _HandleType {
   bottomRight,
 }
 
+class _CropDragState {
+  final CropQuad quad;
+  final _HandleType activeHandle;
+  final Offset touchPosition;
+
+  const _CropDragState({
+    required this.quad,
+    this.activeHandle = _HandleType.none,
+    this.touchPosition = Offset.zero,
+  });
+
+  _CropDragState copyWith({
+    CropQuad? quad,
+    _HandleType? activeHandle,
+    Offset? touchPosition,
+  }) {
+    return _CropDragState(
+      quad: quad ?? this.quad,
+      activeHandle: activeHandle ?? this.activeHandle,
+      touchPosition: touchPosition ?? this.touchPosition,
+    );
+  }
+}
+
 class CropOverlayWidget extends StatefulWidget {
   final CropQuad cropQuad;
-  final Rect imageDisplayRect; // The exact pixel bounds where the image is displayed
-  final Uint8List? previewImageBytes; // Source preview image bytes for genuine loupe zoom
+  final Rect imageDisplayRect; // Exact pixel bounds where the image is displayed
+  final Uint8List? previewImageBytes; // Downsampled preview image bytes for loupe zoom
   final ValueChanged<CropQuad> onQuadChanged;
 
   const CropOverlayWidget({
@@ -29,7 +53,7 @@ class CropOverlayWidget extends StatefulWidget {
 }
 
 class _CropOverlayWidgetState extends State<CropOverlayWidget> {
-  // Pre-instantiated Paints for zero-allocation performance & zero shader jank (FIX 2)
+  // Pre-instantiated Paints for zero-allocation performance & zero shader jank
   late final Paint _scrimPaint;
   late final Paint _borderPaint;
   late final Paint _gridPaint;
@@ -45,9 +69,8 @@ class _CropOverlayWidgetState extends State<CropOverlayWidget> {
   final Path _scrimPath = Path();
   final Path _borderPath = Path();
 
-  _HandleType _activeHandle = _HandleType.none;
-  Offset _currentTouchPosition = Offset.zero;
-  late CropQuad _currentQuad;
+  // ValueNotifier drives CustomPainter repaint and Loupe position without rebuilding parent widgets (FIX 3)
+  late final ValueNotifier<_CropDragState> _dragStateNotifier;
   MemoryImage? _cachedPreviewImage;
 
   // Touch and visual handle constants
@@ -55,7 +78,7 @@ class _CropOverlayWidgetState extends State<CropOverlayWidget> {
   static const double _defaultVisualRadius = 10.0; // 20dp diameter
   static const double _draggingVisualRadius = 15.0; // 30dp diameter
 
-  // Magnifying Loupe constants (FIX 1)
+  // Magnifying Loupe constants
   static const double _loupeSize = 112.0; // 112dp circular loupe
   static const double _loupeRadius = _loupeSize / 2.0;
   static const double _zoomFactor = 2.4; // 2.4x genuine zoom magnification
@@ -63,7 +86,9 @@ class _CropOverlayWidgetState extends State<CropOverlayWidget> {
   @override
   void initState() {
     super.initState();
-    _currentQuad = widget.cropQuad;
+    _dragStateNotifier = ValueNotifier<_CropDragState>(
+      _CropDragState(quad: widget.cropQuad),
+    );
     if (widget.previewImageBytes != null) {
       _cachedPreviewImage = MemoryImage(widget.previewImageBytes!);
     }
@@ -82,7 +107,6 @@ class _CropOverlayWidgetState extends State<CropOverlayWidget> {
       ..strokeWidth = 1.0
       ..style = PaintingStyle.stroke;
 
-    // Dual-layer drop shadow without MaskFilter.blur to avoid shader compilation jank on first handle scale
     _handleShadowLayer1Paint = Paint()
       ..color = const Color(0x18000000)
       ..style = PaintingStyle.fill;
@@ -101,7 +125,7 @@ class _CropOverlayWidgetState extends State<CropOverlayWidget> {
       ..style = PaintingStyle.fill;
 
     _activeHandleFillPaint = Paint()
-      ..color = const Color(0xFFFBBF24) // Amber glow when actively dragging
+      ..color = const Color(0xFFFBBF24)
       ..style = PaintingStyle.fill;
 
     _centerDotInactivePaint = Paint()
@@ -121,9 +145,16 @@ class _CropOverlayWidgetState extends State<CropOverlayWidget> {
           ? MemoryImage(widget.previewImageBytes!)
           : null;
     }
-    if (_activeHandle == _HandleType.none && widget.cropQuad != _currentQuad) {
-      _currentQuad = widget.cropQuad;
+    final current = _dragStateNotifier.value;
+    if (current.activeHandle == _HandleType.none && widget.cropQuad != current.quad) {
+      _dragStateNotifier.value = current.copyWith(quad: widget.cropQuad);
     }
+  }
+
+  @override
+  void dispose() {
+    _dragStateNotifier.dispose();
+    super.dispose();
   }
 
   Offset _toPixel(Offset norm) {
@@ -143,13 +174,12 @@ class _CropOverlayWidgetState extends State<CropOverlayWidget> {
     );
   }
 
-  _HandleType _detectHandle(Offset localPosition) {
-    final tl = _toPixel(_currentQuad.topLeft);
-    final tr = _toPixel(_currentQuad.topRight);
-    final bl = _toPixel(_currentQuad.bottomLeft);
-    final br = _toPixel(_currentQuad.bottomRight);
+  _HandleType _detectHandle(Offset localPosition, CropQuad quad) {
+    final tl = _toPixel(quad.topLeft);
+    final tr = _toPixel(quad.topRight);
+    final bl = _toPixel(quad.bottomLeft);
+    final br = _toPixel(quad.bottomRight);
 
-    // Check corners with generous 56dp hit radius
     final dTL = (localPosition - tl).distance;
     final dTR = (localPosition - tr).distance;
     final dBL = (localPosition - bl).distance;
@@ -179,22 +209,24 @@ class _CropOverlayWidgetState extends State<CropOverlayWidget> {
   }
 
   void _onPanStart(DragStartDetails details) {
-    final handle = _detectHandle(details.localPosition);
+    final current = _dragStateNotifier.value;
+    final handle = _detectHandle(details.localPosition, current.quad);
     if (handle != _HandleType.none) {
-      setState(() {
-        _activeHandle = handle;
-        _currentTouchPosition = details.localPosition;
-      });
+      _dragStateNotifier.value = current.copyWith(
+        activeHandle: handle,
+        touchPosition: details.localPosition,
+      );
     }
   }
 
   void _onPanUpdate(DragUpdateDetails details) {
-    if (_activeHandle == _HandleType.none) return;
+    final current = _dragStateNotifier.value;
+    if (current.activeHandle == _HandleType.none) return;
 
     final newNorm = _toNorm(details.localPosition);
-    CropQuad updated = _currentQuad;
+    CropQuad updated = current.quad;
 
-    switch (_activeHandle) {
+    switch (current.activeHandle) {
       case _HandleType.topLeft:
         updated = updated.copyWith(topLeft: newNorm);
         break;
@@ -211,40 +243,38 @@ class _CropOverlayWidgetState extends State<CropOverlayWidget> {
         break;
     }
 
-    setState(() {
-      _currentQuad = updated;
-      _currentTouchPosition = details.localPosition;
-    });
+    _dragStateNotifier.value = current.copyWith(
+      quad: updated,
+      touchPosition: details.localPosition,
+    );
 
     widget.onQuadChanged(updated);
   }
 
   void _onPanEnd(DragEndDetails details) {
-    if (_activeHandle != _HandleType.none) {
-      setState(() {
-        _activeHandle = _HandleType.none;
-      });
+    final current = _dragStateNotifier.value;
+    if (current.activeHandle != _HandleType.none) {
+      _dragStateNotifier.value = current.copyWith(activeHandle: _HandleType.none);
     }
   }
 
   void _onPanCancel() {
-    if (_activeHandle != _HandleType.none) {
-      setState(() {
-        _activeHandle = _HandleType.none;
-      });
+    final current = _dragStateNotifier.value;
+    if (current.activeHandle != _HandleType.none) {
+      _dragStateNotifier.value = current.copyWith(activeHandle: _HandleType.none);
     }
   }
 
-  Offset? get _activeCornerNorm {
-    switch (_activeHandle) {
+  Offset? _activeCornerNorm(_CropDragState state) {
+    switch (state.activeHandle) {
       case _HandleType.topLeft:
-        return _currentQuad.topLeft;
+        return state.quad.topLeft;
       case _HandleType.topRight:
-        return _currentQuad.topRight;
+        return state.quad.topRight;
       case _HandleType.bottomLeft:
-        return _currentQuad.bottomLeft;
+        return state.quad.bottomLeft;
       case _HandleType.bottomRight:
-        return _currentQuad.bottomRight;
+        return state.quad.bottomRight;
       case _HandleType.none:
         return null;
     }
@@ -257,108 +287,6 @@ class _CropOverlayWidgetState extends State<CropOverlayWidget> {
         final double viewW = constraints.maxWidth;
         final double viewH = constraints.maxHeight;
 
-        // Calculate Loupe Position & Sampling (FIX 1)
-        Widget? loupeWidget;
-        final cornerNorm = _activeCornerNorm;
-
-        if (_activeHandle != _HandleType.none &&
-            cornerNorm != null &&
-            widget.previewImageBytes != null &&
-            widget.imageDisplayRect.width > 0 &&
-            widget.imageDisplayRect.height > 0) {
-          // 1. Position loupe slightly above the touch point (default: -85dp)
-          double loupeCenterX = _currentTouchPosition.dx;
-          double loupeCenterY = _currentTouchPosition.dy - 85.0;
-
-          // Flip below finger if too close to the top screen edge
-          if (loupeCenterY - _loupeRadius < 8.0) {
-            loupeCenterY = _currentTouchPosition.dy + 85.0;
-          }
-
-          // Clamp so the loupe is completely within the viewport
-          loupeCenterX = loupeCenterX.clamp(_loupeRadius + 6.0, viewW - _loupeRadius - 6.0);
-          loupeCenterY = loupeCenterY.clamp(_loupeRadius + 6.0, viewH - _loupeRadius - 6.0);
-
-          final double loupeLeft = loupeCenterX - _loupeRadius;
-          final double loupeTop = loupeCenterY - _loupeRadius;
-
-          // 2. Calculate pixel coordinates inside source image
-          final double cornerImgX = cornerNorm.dx * widget.imageDisplayRect.width;
-          final double cornerImgY = cornerNorm.dy * widget.imageDisplayRect.height;
-
-          // 3. Magnified image dimensions & offset inside loupe circle
-          final double scaledImgW = widget.imageDisplayRect.width * _zoomFactor;
-          final double scaledImgH = widget.imageDisplayRect.height * _zoomFactor;
-
-          final double imgLeftInLoupe = _loupeRadius - (cornerImgX * _zoomFactor);
-          final double imgTopInLoupe = _loupeRadius - (cornerImgY * _zoomFactor);
-
-          loupeWidget = Positioned(
-            left: loupeLeft,
-            top: loupeTop,
-            width: _loupeSize,
-            height: _loupeSize,
-            child: IgnorePointer(
-              child: Container(
-                width: _loupeSize,
-                height: _loupeSize,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 3.0),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0x77000000),
-                      blurRadius: 10,
-                      spreadRadius: 2,
-                      offset: Offset(0, 4),
-                    ),
-                  ],
-                ),
-                child: ClipOval(
-                  child: Stack(
-                    clipBehavior: Clip.hardEdge,
-                    children: [
-                      // Neutral dark background for areas outside document bounds
-                      Positioned.fill(
-                        child: Container(color: const Color(0xFF141414)),
-                      ),
-
-                      // Genuine zoomed preview image (zero re-decoding, GPU-cached)
-                      Positioned(
-                        left: imgLeftInLoupe,
-                        top: imgTopInLoupe,
-                        width: scaledImgW,
-                        height: scaledImgH,
-                        child: Image(
-                          image: _cachedPreviewImage ?? MemoryImage(widget.previewImageBytes!),
-                          fit: BoxFit.fill,
-                          gaplessPlayback: true,
-                          filterQuality: FilterQuality.medium,
-                        ),
-                      ),
-
-                      // Circular inner border shadow
-                      Positioned.fill(
-                        child: Container(
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            border: Border.all(color: const Color(0x33000000), width: 1.0),
-                          ),
-                        ),
-                      ),
-
-                      // Crosshair Reticle centered on exact corner landing spot
-                      const Positioned.fill(
-                        child: _LoupeReticle(),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          );
-        }
-
         return RepaintBoundary(
           child: GestureDetector(
             behavior: HitTestBehavior.translucent,
@@ -369,14 +297,13 @@ class _CropOverlayWidgetState extends State<CropOverlayWidget> {
             child: Stack(
               clipBehavior: Clip.none,
               children: [
-                // Crop Quad, Scrim, and Handles Canvas
+                // 1. Crop Quad, Scrim, and Handles Canvas — repaints directly via _dragStateNotifier (zero widget rebuilds)
                 Positioned.fill(
                   child: CustomPaint(
                     size: Size.infinite,
                     painter: _QuadCropPainter(
-                      cropQuad: _currentQuad,
+                      stateListenable: _dragStateNotifier,
                       imageDisplayRect: widget.imageDisplayRect,
-                      activeHandle: _activeHandle,
                       scrimPaint: _scrimPaint,
                       borderPaint: _borderPaint,
                       gridPaint: _gridPaint,
@@ -395,8 +322,92 @@ class _CropOverlayWidgetState extends State<CropOverlayWidget> {
                   ),
                 ),
 
-                // Magnifying Loupe Overlay (FIX 1: appears only while dragging)
-                if (loupeWidget != null) loupeWidget,
+                // 2. Magnifying Loupe Overlay — scoped to ValueListenableBuilder
+                ValueListenableBuilder<_CropDragState>(
+                  valueListenable: _dragStateNotifier,
+                  builder: (context, dragState, _) {
+                    final cornerNorm = _activeCornerNorm(dragState);
+                    if (dragState.activeHandle == _HandleType.none ||
+                        cornerNorm == null ||
+                        widget.previewImageBytes == null ||
+                        widget.imageDisplayRect.width <= 0 ||
+                        widget.imageDisplayRect.height <= 0) {
+                      return const SizedBox.shrink();
+                    }
+
+                    double loupeCenterX = dragState.touchPosition.dx;
+                    double loupeCenterY = dragState.touchPosition.dy - 85.0;
+
+                    if (loupeCenterY - _loupeRadius < 8.0) {
+                      loupeCenterY = dragState.touchPosition.dy + 85.0;
+                    }
+
+                    loupeCenterX = loupeCenterX.clamp(_loupeRadius + 6.0, viewW - _loupeRadius - 6.0);
+                    loupeCenterY = loupeCenterY.clamp(_loupeRadius + 6.0, viewH - _loupeRadius - 6.0);
+
+                    final double loupeLeft = loupeCenterX - _loupeRadius;
+                    final double loupeTop = loupeCenterY - _loupeRadius;
+
+                    final double cornerImgX = cornerNorm.dx * widget.imageDisplayRect.width;
+                    final double cornerImgY = cornerNorm.dy * widget.imageDisplayRect.height;
+
+                    final double scaledImgW = widget.imageDisplayRect.width * _zoomFactor;
+                    final double scaledImgH = widget.imageDisplayRect.height * _zoomFactor;
+
+                    final double imgLeftInLoupe = _loupeRadius - (cornerImgX * _zoomFactor);
+                    final double imgTopInLoupe = _loupeRadius - (cornerImgY * _zoomFactor);
+
+                    return Positioned(
+                      left: loupeLeft,
+                      top: loupeTop,
+                      width: _loupeSize,
+                      height: _loupeSize,
+                      child: IgnorePointer(
+                        child: Container(
+                          width: _loupeSize,
+                          height: _loupeSize,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 3.0),
+                            boxShadow: const [
+                              BoxShadow(
+                                color: Color(0x77000000),
+                                blurRadius: 10,
+                                spreadRadius: 2,
+                                offset: Offset(0, 4),
+                              ),
+                            ],
+                          ),
+                          child: ClipOval(
+                            child: Stack(
+                              clipBehavior: Clip.hardEdge,
+                              children: [
+                                const Positioned.fill(
+                                  child: ColoredBox(color: Color(0xFF141414)),
+                                ),
+                                Positioned(
+                                  left: imgLeftInLoupe,
+                                  top: imgTopInLoupe,
+                                  width: scaledImgW,
+                                  height: scaledImgH,
+                                  child: Image(
+                                    image: _cachedPreviewImage ?? MemoryImage(widget.previewImageBytes!),
+                                    fit: BoxFit.fill,
+                                    gaplessPlayback: true,
+                                    filterQuality: FilterQuality.low,
+                                  ),
+                                ),
+                                const Positioned.fill(
+                                  child: _LoupeReticle(),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
               ],
             ),
           ),
@@ -407,9 +418,8 @@ class _CropOverlayWidgetState extends State<CropOverlayWidget> {
 }
 
 class _QuadCropPainter extends CustomPainter {
-  final CropQuad cropQuad;
+  final ValueNotifier<_CropDragState> stateListenable;
   final Rect imageDisplayRect;
-  final _HandleType activeHandle;
   final Paint scrimPaint;
   final Paint borderPaint;
   final Paint gridPaint;
@@ -426,9 +436,8 @@ class _QuadCropPainter extends CustomPainter {
   final double draggingRadius;
 
   _QuadCropPainter({
-    required this.cropQuad,
+    required this.stateListenable,
     required this.imageDisplayRect,
-    required this.activeHandle,
     required this.scrimPaint,
     required this.borderPaint,
     required this.gridPaint,
@@ -443,7 +452,7 @@ class _QuadCropPainter extends CustomPainter {
     required this.borderPath,
     required this.defaultRadius,
     required this.draggingRadius,
-  });
+  }) : super(repaint: stateListenable);
 
   Offset _toPixel(Offset norm) {
     final r = imageDisplayRect;
@@ -457,12 +466,16 @@ class _QuadCropPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     if (imageDisplayRect.isEmpty) return;
 
+    final state = stateListenable.value;
+    final cropQuad = state.quad;
+    final activeHandle = state.activeHandle;
+
     final tl = _toPixel(cropQuad.topLeft);
     final tr = _toPixel(cropQuad.topRight);
     final br = _toPixel(cropQuad.bottomRight);
     final bl = _toPixel(cropQuad.bottomLeft);
 
-    // 1. Scrim overlay outside document crop quad (Zero allocation via evenOdd Path)
+    // 1. Scrim overlay outside document crop quad
     scrimPath.reset();
     scrimPath.fillType = PathFillType.evenOdd;
     scrimPath.addRect(Rect.fromLTWH(0, 0, size.width, size.height));
@@ -484,7 +497,7 @@ class _QuadCropPainter extends CustomPainter {
       canvas.drawLine(topV, botV, gridPaint);
     }
 
-    // 3. Document Quad Border (Zero allocation)
+    // 3. Document Quad Border
     borderPath.reset();
     borderPath.moveTo(tl.dx, tl.dy);
     borderPath.lineTo(tr.dx, tr.dy);
@@ -493,28 +506,21 @@ class _QuadCropPainter extends CustomPainter {
     borderPath.close();
     canvas.drawPath(borderPath, borderPaint);
 
-    // 4. Corner Handles (Zero Paint allocations in paint loop)
-    _drawHandle(canvas, tl, _HandleType.topLeft);
-    _drawHandle(canvas, tr, _HandleType.topRight);
-    _drawHandle(canvas, bl, _HandleType.bottomLeft);
-    _drawHandle(canvas, br, _HandleType.bottomRight);
+    // 4. Corner Handles
+    _drawHandle(canvas, tl, _HandleType.topLeft, activeHandle);
+    _drawHandle(canvas, tr, _HandleType.topRight, activeHandle);
+    _drawHandle(canvas, bl, _HandleType.bottomLeft, activeHandle);
+    _drawHandle(canvas, br, _HandleType.bottomRight, activeHandle);
   }
 
-  void _drawHandle(Canvas canvas, Offset pos, _HandleType type) {
+  void _drawHandle(Canvas canvas, Offset pos, _HandleType type, _HandleType activeHandle) {
     final bool isActive = activeHandle == type;
     final double radius = isActive ? draggingRadius : defaultRadius;
 
-    // Dual-layer solid shadow (eliminates MaskFilter.blur shader compilation jank)
     canvas.drawCircle(pos.translate(0, 2), radius + 3.0, handleShadowLayer1Paint);
     canvas.drawCircle(pos.translate(0, 1.5), radius + 1.5, handleShadowLayer2Paint);
-
-    // Inner fill (amber when dragging, white otherwise)
     canvas.drawCircle(pos, radius, isActive ? activeFillPaint : innerFillPaint);
-
-    // Dark contrasting outer ring
     canvas.drawCircle(pos, radius, outerRingPaint);
-
-    // Accent center dot for precision targeting (pre-instantiated paints)
     canvas.drawCircle(
       pos,
       isActive ? 4.0 : 3.0,
@@ -524,9 +530,8 @@ class _QuadCropPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _QuadCropPainter oldDelegate) {
-    return oldDelegate.cropQuad != cropQuad ||
-        oldDelegate.imageDisplayRect != imageDisplayRect ||
-        oldDelegate.activeHandle != activeHandle;
+    return oldDelegate.imageDisplayRect != imageDisplayRect ||
+        oldDelegate.stateListenable != stateListenable;
   }
 }
 
@@ -543,7 +548,7 @@ class _LoupeReticle extends StatelessWidget {
 
 class _LoupeReticlePainter extends CustomPainter {
   final Paint _reticlePaint = Paint()
-    ..color = const Color(0xFFFBBF24) // High-visibility amber
+    ..color = const Color(0xFFFBBF24)
     ..strokeWidth = 1.4
     ..style = PaintingStyle.stroke;
 
@@ -561,19 +566,16 @@ class _LoupeReticlePainter extends CustomPainter {
     final center = Offset(size.width / 2, size.height / 2);
     const double gap = 6.0;
 
-    // 1. Draw dark backing lines for contrast on bright documents
     canvas.drawLine(Offset(center.dx, 0), Offset(center.dx, center.dy - gap), _reticleDarkBorderPaint);
     canvas.drawLine(Offset(center.dx, center.dy + gap), Offset(center.dx, size.height), _reticleDarkBorderPaint);
     canvas.drawLine(Offset(0, center.dy), Offset(center.dx - gap, center.dy), _reticleDarkBorderPaint);
     canvas.drawLine(Offset(center.dx + gap, center.dy), Offset(size.width, center.dy), _reticleDarkBorderPaint);
 
-    // 2. Draw amber precision crosshair lines
     canvas.drawLine(Offset(center.dx, 0), Offset(center.dx, center.dy - gap), _reticlePaint);
     canvas.drawLine(Offset(center.dx, center.dy + gap), Offset(center.dx, size.height), _reticlePaint);
     canvas.drawLine(Offset(0, center.dy), Offset(center.dx - gap, center.dy), _reticlePaint);
     canvas.drawLine(Offset(center.dx + gap, center.dy), Offset(size.width, center.dy), _reticlePaint);
 
-    // 3. Center precision targeting ring & pin dot
     canvas.drawCircle(center, gap, _reticleDarkBorderPaint);
     canvas.drawCircle(center, gap, _reticlePaint);
     canvas.drawCircle(center, 1.6, _centerDotPaint);

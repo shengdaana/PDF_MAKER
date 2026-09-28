@@ -1,8 +1,7 @@
-import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:image/image.dart' as img;
+import 'package:path_provider/path_provider.dart';
 import '../main.dart';
 import '../models/pdf_page_item.dart';
 import '../utils/image_processor.dart';
@@ -19,12 +18,10 @@ class EditScreen extends StatefulWidget {
 
 class _EditScreenState extends State<EditScreen> {
   late int _pendingRotation;
-  late EnhanceMode _pendingEnhanceMode;
-  CropQuad _pendingCropQuad = const CropQuad();
+  CropQuad _pendingCropQuad = CropQuad.full;
 
   bool _isProcessing = true;
-  img.Image? _normalizedSourceImage;
-  img.Image? _basePreviewImage;
+  Uint8List? _basePreviewBytes;
   Uint8List? _previewImageBytes;
   int _previewWidth = 1;
   int _previewHeight = 1;
@@ -34,7 +31,6 @@ class _EditScreenState extends State<EditScreen> {
   void initState() {
     super.initState();
     _pendingRotation = widget.pageItem.rotationDegrees;
-    _pendingEnhanceMode = widget.pageItem.enhanceMode;
 
     if (widget.pageItem.cropQuad != null) {
       _pendingCropQuad = widget.pageItem.cropQuad!;
@@ -47,26 +43,36 @@ class _EditScreenState extends State<EditScreen> {
         bottomLeft: Offset(r.left, r.bottom),
       );
     } else {
-      _pendingCropQuad = const CropQuad();
+      // FIX 2: Default to full-frame [0.0 .. 1.0] so untouched pages are never cropped
+      _pendingCropQuad = CropQuad.full;
     }
 
-    _loadAndNormalize();
+    _loadDownsampledPreview();
   }
 
-  Future<void> _loadAndNormalize() async {
+  /// Loads a downsampled working preview off the main UI isolate (FIX 3).
+  /// Reuses the existing downsampled thumbnail (`basePreviewPath`) when available so opening
+  /// the Edit screen never decodes the full-resolution photo on the UI thread.
+  Future<void> _loadDownsampledPreview() async {
     setState(() => _isProcessing = true);
     try {
-      final file = File(widget.pageItem.sourcePath);
-      final normalized = await ImageProcessor.loadAndNormalizeExif(file);
-      _normalizedSourceImage = normalized;
-      if (normalized != null) {
-        // Cache a clean, downsampled base image for instantaneous, non-destructive live filter previews (FIX 2)
-        _basePreviewImage = ImageProcessor.downsampleForPreview(normalized, maxDimension: 1000);
-      }
+      final PreviewRenderData? previewData = await ImageProcessor.loadEditPreviewInIsolate(
+        sourcePath: widget.pageItem.sourcePath,
+        basePreviewPath: widget.pageItem.basePreviewPath,
+        rotationDegrees: _pendingRotation,
+      );
 
-      await _renderLivePreview();
+      if (previewData != null && mounted) {
+        setState(() {
+          _basePreviewBytes = previewData.baseBytes;
+          _previewImageBytes = previewData.displayBytes;
+          _previewWidth = previewData.width;
+          _previewHeight = previewData.height;
+          _previewVersion++;
+        });
+      }
     } catch (e) {
-      debugPrint('Error loading image for editing: $e');
+      debugPrint('Error loading preview for editing: $e');
     } finally {
       if (mounted) {
         setState(() => _isProcessing = false);
@@ -74,42 +80,30 @@ class _EditScreenState extends State<EditScreen> {
     }
   }
 
-  /// Immediately re-renders the on-screen preview from a fresh clone of [_basePreviewImage]
-  /// whenever rotation or Enhance filter mode changes (FIX 2).
-  Future<void> _renderLivePreview() async {
-    final img.Image? sourceForPreview = _basePreviewImage ?? _normalizedSourceImage;
-    if (sourceForPreview == null) return;
+  Future<void> _rotate90() async {
+    final int nextRotation = (_pendingRotation + 90) % 360;
+    final CropQuad rotatedQuad = ImageProcessor.rotateQuad(_pendingCropQuad, 90);
 
-    // Always start from a fresh clone so in-place image operations never corrupt the base image
-    img.Image working = sourceForPreview.clone();
+    setState(() {
+      _pendingRotation = nextRotation;
+      _pendingCropQuad = rotatedQuad;
+    });
 
-    // 1. Apply rotation
-    if (_pendingRotation % 360 != 0) {
-      working = ImageProcessor.rotateByDegrees(working, _pendingRotation);
-    }
+    if (_basePreviewBytes == null) return;
 
-    // 2. Apply selected Enhance mode (Original Color / Grayscale / B&W High Contrast)
-    if (_pendingEnhanceMode != EnhanceMode.none) {
-      working = ImageProcessor.applyEnhanceMode(working, _pendingEnhanceMode);
-    }
+    final PreviewRenderData? rotated = await ImageProcessor.rotatePreviewInIsolate(
+      baseBytes: _basePreviewBytes!,
+      rotationDegrees: nextRotation,
+    );
 
-    final previewBytes = Uint8List.fromList(img.encodeJpg(working, quality: 85));
-    if (mounted) {
+    if (rotated != null && mounted) {
       setState(() {
-        _previewImageBytes = previewBytes;
-        _previewWidth = working.width;
-        _previewHeight = working.height;
+        _previewImageBytes = rotated.displayBytes;
+        _previewWidth = rotated.width;
+        _previewHeight = rotated.height;
         _previewVersion++;
       });
     }
-  }
-
-  void _rotate90() {
-    setState(() {
-      _pendingRotation = (_pendingRotation + 90) % 360;
-      _pendingCropQuad = ImageProcessor.rotateQuad(_pendingCropQuad, 90);
-    });
-    _renderLivePreview();
   }
 
   void _resetCrop() {
@@ -118,127 +112,38 @@ class _EditScreenState extends State<EditScreen> {
     });
   }
 
-  void _selectEnhanceMode(EnhanceMode mode) {
-    setState(() {
-      _pendingEnhanceMode = mode;
-    });
-    _renderLivePreview();
-  }
-
-  void _showEnhanceModeSelector() {
-    final strings = AppStateScope.of(context).strings;
-
-    showModalBottomSheet(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (ctx) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 20.0, horizontal: 16.0),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  strings.get('enhance_sheet_title'),
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 14),
-                ListTile(
-                  leading: const Icon(Icons.palette_rounded, color: Colors.indigo),
-                  title: Text(
-                    strings.get('enhance_mode_color_title'),
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  subtitle: Text(strings.get('enhance_mode_color_desc')),
-                  trailing: _pendingEnhanceMode == EnhanceMode.originalColor
-                      ? const Icon(Icons.check_circle_rounded, color: Colors.indigo)
-                      : null,
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _selectEnhanceMode(EnhanceMode.originalColor);
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.tonality_rounded, color: Colors.blueGrey),
-                  title: Text(
-                    strings.get('enhance_mode_gray_title'),
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  subtitle: Text(strings.get('enhance_mode_gray_desc')),
-                  trailing: _pendingEnhanceMode == EnhanceMode.grayscale
-                      ? const Icon(Icons.check_circle_rounded, color: Colors.indigo)
-                      : null,
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _selectEnhanceMode(EnhanceMode.grayscale);
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.contrast_rounded, color: Colors.black87),
-                  title: Text(
-                    strings.get('enhance_mode_bw_title'),
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  ),
-                  subtitle: Text(strings.get('enhance_mode_bw_desc')),
-                  trailing: _pendingEnhanceMode == EnhanceMode.bwHighContrast
-                      ? const Icon(Icons.check_circle_rounded, color: Colors.indigo)
-                      : null,
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _selectEnhanceMode(EnhanceMode.bwHighContrast);
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.close_rounded, color: Colors.grey),
-                  title: Text(strings.get('enhance_mode_off_title')),
-                  subtitle: Text(strings.get('enhance_mode_off_desc')),
-                  trailing: _pendingEnhanceMode == EnhanceMode.none
-                      ? const Icon(Icons.check_circle_rounded, color: Colors.indigo)
-                      : null,
-                  onTap: () {
-                    Navigator.pop(ctx);
-                    _selectEnhanceMode(EnhanceMode.none);
-                  },
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
   Future<void> _confirmEdits() async {
-    if (_normalizedSourceImage == null) {
-      Navigator.pop(context);
+    final bool hasCustomCrop = !_pendingCropQuad.isFullFrame;
+    final bool hasRotation = (_pendingRotation % 360) != 0;
+
+    // FIX 2: If the user left the 4 corners at default full-frame and rotation is unchanged at 0°,
+    // return immediately without running perspective correction or re-encoding.
+    if (!hasCustomCrop &&
+        !hasRotation &&
+        widget.pageItem.rotationDegrees == 0 &&
+        !widget.pageItem.hasCustomCrop) {
+      Navigator.pop(context, widget.pageItem);
       return;
     }
 
     setState(() => _isProcessing = true);
 
     try {
-      // FIX 1: Unconditionally apply perspective-rectification (`img.copyRectify`)
-      // using the user's 4 corner points in `_pendingCropQuad`.
-      final img.Image result = ImageProcessor.processPipeline(
-        sourceImage: _normalizedSourceImage!,
+      final tempDir = await getTemporaryDirectory();
+      final String newPreviewPath = await ImageProcessor.confirmEditsInIsolate(
+        sourcePath: widget.pageItem.sourcePath,
+        basePreviewPath: widget.pageItem.basePreviewPath,
+        tempDirPath: tempDir.path,
+        pageId: widget.pageItem.id,
         rotationDegrees: _pendingRotation,
         cropQuad: _pendingCropQuad,
-        enhanceMode: _pendingEnhanceMode,
-      );
-
-      final newPreviewPath = await ImageProcessor.saveToTempPreviewFile(
-        result,
-        'page_${widget.pageItem.id}',
       );
 
       final updatedItem = widget.pageItem.cloneWith(
         currentPreviewPath: newPreviewPath,
         rotationDegrees: _pendingRotation,
-        enhanceMode: _pendingEnhanceMode,
-        cropQuad: _pendingCropQuad,
+        cropQuad: hasCustomCrop ? _pendingCropQuad : null,
+        clearCropQuad: !hasCustomCrop,
       );
 
       if (mounted) {
@@ -268,11 +173,6 @@ class _EditScreenState extends State<EditScreen> {
         ),
         title: Text(strings.get('btn_crop_rotate')),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded),
-            tooltip: strings.get('tooltip_reset_crop'),
-            onPressed: _resetCrop,
-          ),
           Padding(
             padding: const EdgeInsets.only(right: 12.0),
             child: TextButton.icon(
@@ -294,7 +194,7 @@ class _EditScreenState extends State<EditScreen> {
           children: [
             // Preview & Crop Canvas Area
             Expanded(
-              child: Container(
+              child: ColoredBox(
                 color: const Color(0xFF141414),
                 child: Center(
                   child: _isProcessing
@@ -331,7 +231,7 @@ class _EditScreenState extends State<EditScreen> {
 
                                 return Stack(
                                   children: [
-                                    // 1. Live-updating Positioned Image (FIX 2)
+                                    // 1. Downsampled Preview Image (with cacheWidth for low GPU memory)
                                     Positioned(
                                       left: dispL,
                                       top: dispT,
@@ -339,15 +239,15 @@ class _EditScreenState extends State<EditScreen> {
                                       height: dispH,
                                       child: Image.memory(
                                         _previewImageBytes!,
-                                        key: ValueKey(
-                                          'preview_${_pendingEnhanceMode.name}_${_pendingRotation}_$_previewVersion',
-                                        ),
+                                        key: ValueKey('preview_${_pendingRotation}_$_previewVersion'),
                                         fit: BoxFit.fill,
                                         gaplessPlayback: true,
+                                        cacheWidth: 960,
+                                        filterQuality: FilterQuality.low,
                                       ),
                                     ),
 
-                                    // 2. Unclipped 4-corner perspective crop overlay with magnifying loupe
+                                    // 2. 4-corner perspective crop overlay with magnifying loupe
                                     Positioned.fill(
                                       child: CropOverlayWidget(
                                         cropQuad: _pendingCropQuad,
@@ -386,17 +286,17 @@ class _EditScreenState extends State<EditScreen> {
               ),
             ),
 
-            // Bottom Action Bar: Rotate 90° and Enhance Modes (FIX 1: Auto Deskew removed)
+            // Balanced Bottom Action Bar: Rotate 90° and Reset Crop (FIX 1: Enhance removed)
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 10.0),
               decoration: BoxDecoration(
                 color: theme.cardColor,
-                boxShadow: [
+                boxShadow: const [
                   BoxShadow(
-                    color: Colors.black.withOpacity(0.08),
+                    color: Color(0x14000000),
                     blurRadius: 6,
-                    offset: const Offset(0, -2),
-                  )
+                    offset: Offset(0, -2),
+                  ),
                 ],
               ),
               child: Row(
@@ -421,38 +321,19 @@ class _EditScreenState extends State<EditScreen> {
                   ),
                   const SizedBox(width: 12),
 
-                  // 2. Enhance Modes (Original Color / Grayscale / B&W High Contrast)
+                  // 2. Reset Crop to Full Frame
                   Expanded(
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: _pendingEnhanceMode != EnhanceMode.none
-                            ? primaryColor
-                            : theme.colorScheme.surface,
-                        foregroundColor: _pendingEnhanceMode != EnhanceMode.none
-                            ? Colors.white
-                            : theme.colorScheme.onSurface,
-                        side: BorderSide(color: primaryColor.withOpacity(0.5)),
-                        elevation: _pendingEnhanceMode != EnhanceMode.none ? 2 : 0,
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
                         minimumSize: const Size(0, 48),
                       ),
-                      onPressed: _isProcessing ? null : _showEnhanceModeSelector,
-                      icon: Icon(
-                        _pendingEnhanceMode != EnhanceMode.none
-                            ? Icons.auto_fix_high_rounded
-                            : Icons.auto_fix_normal_rounded,
-                        size: 20,
-                      ),
+                      onPressed: _isProcessing ? null : _resetCrop,
+                      icon: const Icon(Icons.crop_free_rounded, size: 20),
                       label: FittedBox(
                         fit: BoxFit.scaleDown,
                         child: Text(
-                          _pendingEnhanceMode == EnhanceMode.none
-                              ? strings.get('btn_enhance')
-                              : _pendingEnhanceMode == EnhanceMode.originalColor
-                                  ? strings.get('btn_enhance_color')
-                                  : _pendingEnhanceMode == EnhanceMode.grayscale
-                                      ? strings.get('btn_enhance_gray')
-                                      : strings.get('btn_enhance_bw'),
+                          strings.get('btn_reset_crop'),
                           style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
                         ),
                       ),

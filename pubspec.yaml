@@ -10,14 +10,12 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  flutter_localizations:
-    sdk: flutter
 
   # PDF generation & preview
   pdf: ^3.11.1
   printing: ^5.13.2
 
-  # Image manipulation, EXIF normalization, perspective & filters
+  # Image manipulation, EXIF normalization & perspective crop
   image: ^4.2.0
   image_picker: ^1.1.2
 

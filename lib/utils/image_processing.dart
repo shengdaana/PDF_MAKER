@@ -11,9 +11,6 @@ class ImageProcessingService {
   static Future<img.Image?> loadAndNormalizeExif(File file) =>
       ImageProcessor.loadAndNormalizeExif(file);
 
-  static img.Image applyDocumentEnhance(img.Image input) =>
-      ImageProcessor.applyEnhance(input);
-
   static img.Image cropNormalized(img.Image input, Rect normalizedRect) =>
       ImageProcessor.cropNormalized(input, normalizedRect);
 

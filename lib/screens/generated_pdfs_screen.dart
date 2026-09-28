@@ -1,10 +1,27 @@
 import 'dart:io';
+import 'dart:isolate';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:share_plus/share_plus.dart';
 import '../main.dart';
 import '../models/app_settings.dart';
 import '../services/pdf_service.dart';
+
+class _PdfFileEntry {
+  final String path;
+  final String name;
+  final int sizeBytes;
+  final DateTime modified;
+
+  const _PdfFileEntry({
+    required this.path,
+    required this.name,
+    required this.sizeBytes,
+    required this.modified,
+  });
+
+  File get file => File(path);
+}
 
 class GeneratedPdfsScreen extends StatefulWidget {
   const GeneratedPdfsScreen({super.key});
@@ -14,8 +31,8 @@ class GeneratedPdfsScreen extends StatefulWidget {
 }
 
 class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
-  List<File> _pdfFiles = [];
-  List<File> _filteredFiles = [];
+  List<_PdfFileEntry> _pdfEntries = [];
+  List<_PdfFileEntry> _filteredEntries = [];
   bool _isLoading = true;
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
@@ -45,6 +62,8 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
     }
   }
 
+  /// Scans directories and reads file metadata (`statSync`) inside a background isolate (FIX 3)
+  /// so the UI thread never blocks on disk I/O during loading or scrolling.
   Future<void> _loadPdfFiles() async {
     setState(() => _isLoading = true);
 
@@ -52,31 +71,42 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
       await _checkStoragePermission();
 
       final searchDirs = await PdfService.getAllPdfSearchDirectories();
-      final Set<String> seenPaths = {};
-      final List<File> loaded = [];
+      final List<String> dirPaths = searchDirs.map((d) => d.path).toList();
 
-      for (final dir in searchDirs) {
-        if (await dir.exists()) {
-          final entities = dir.listSync();
-          for (final entity in entities) {
-            if (entity is File &&
-                entity.path.toLowerCase().endsWith('.pdf') &&
-                !seenPaths.contains(entity.path)) {
-              seenPaths.add(entity.path);
-              loaded.add(entity);
+      final List<_PdfFileEntry> loaded = await Isolate.run(() {
+        final Set<String> seenPaths = {};
+        final List<_PdfFileEntry> entries = [];
+
+        for (final dirPath in dirPaths) {
+          final dir = Directory(dirPath);
+          if (!dir.existsSync()) continue;
+          try {
+            final entities = dir.listSync();
+            for (final entity in entities) {
+              if (entity is File &&
+                  entity.path.toLowerCase().endsWith('.pdf') &&
+                  !seenPaths.contains(entity.path)) {
+                seenPaths.add(entity.path);
+                final stat = entity.statSync();
+                final name = entity.uri.pathSegments.last;
+                entries.add(
+                  _PdfFileEntry(
+                    path: entity.path,
+                    name: name,
+                    sizeBytes: stat.size,
+                    modified: stat.modified,
+                  ),
+                );
+              }
             }
-          }
+          } catch (_) {}
         }
-      }
 
-      // Sort newest modified first
-      loaded.sort((a, b) {
-        final aTime = a.statSync().modified;
-        final bTime = b.statSync().modified;
-        return bTime.compareTo(aTime);
+        entries.sort((a, b) => b.modified.compareTo(a.modified));
+        return entries;
       });
 
-      _pdfFiles = loaded;
+      _pdfEntries = loaded;
       _applySearch();
     } catch (e) {
       debugPrint('Error loading generated PDF files: $e');
@@ -89,27 +119,26 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
 
   void _applySearch() {
     if (_searchQuery.trim().isEmpty) {
-      _filteredFiles = List.from(_pdfFiles);
+      _filteredEntries = List.from(_pdfEntries);
     } else {
       final q = _searchQuery.toLowerCase().trim();
-      _filteredFiles = _pdfFiles.where((f) {
-        final name = f.uri.pathSegments.last.toLowerCase();
-        return name.contains(q);
+      _filteredEntries = _pdfEntries.where((entry) {
+        return entry.name.toLowerCase().contains(q);
       }).toList();
     }
   }
 
-  Future<void> _openPdf(File file) async {
-    await PdfService.openPdfFile(context, file);
+  Future<void> _openPdf(_PdfFileEntry entry) async {
+    await PdfService.openPdfFile(context, entry.file);
   }
 
-  void _sharePdf(File file) {
-    Share.shareXFiles([XFile(file.path)], text: file.uri.pathSegments.last);
+  void _sharePdf(_PdfFileEntry entry) {
+    Share.shareXFiles([XFile(entry.path)], text: entry.name);
   }
 
-  void _confirmDeletePdf(File file) {
+  void _confirmDeletePdf(_PdfFileEntry entry) {
     final strings = AppStateScope.of(context).strings;
-    final fileName = file.uri.pathSegments.last;
+    final fileName = entry.name;
 
     showDialog(
       context: context,
@@ -130,6 +159,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
             onPressed: () async {
               Navigator.pop(ctx);
               try {
+                final file = entry.file;
                 if (await file.exists()) {
                   await file.delete();
                 }
@@ -154,28 +184,28 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
     );
   }
 
-  void _toggleSelection(File file) {
+  void _toggleSelection(_PdfFileEntry entry) {
     setState(() {
-      if (_selectedFilePaths.contains(file.path)) {
-        _selectedFilePaths.remove(file.path);
+      if (_selectedFilePaths.contains(entry.path)) {
+        _selectedFilePaths.remove(entry.path);
         if (_selectedFilePaths.isEmpty) {
           _isSelectionMode = false;
         }
       } else {
-        _selectedFilePaths.add(file.path);
+        _selectedFilePaths.add(entry.path);
       }
     });
   }
 
   void _toggleSelectAll() {
     setState(() {
-      if (_selectedFilePaths.length == _filteredFiles.length) {
+      if (_selectedFilePaths.length == _filteredEntries.length) {
         _selectedFilePaths.clear();
         _isSelectionMode = false;
       } else {
         _selectedFilePaths.clear();
-        for (final file in _filteredFiles) {
-          _selectedFilePaths.add(file.path);
+        for (final entry in _filteredEntries) {
+          _selectedFilePaths.add(entry.path);
         }
       }
     });
@@ -254,12 +284,11 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
     return '$hour:$minute';
   }
 
-  Map<String, List<File>> _groupByDate(List<File> files, AppStrings strings) {
-    final Map<String, List<File>> groups = {};
-    for (final file in files) {
-      final modified = file.statSync().modified;
-      final header = strings.formatDateHeader(modified);
-      groups.putIfAbsent(header, () => []).add(file);
+  Map<String, List<_PdfFileEntry>> _groupByDate(List<_PdfFileEntry> entries, AppStrings strings) {
+    final Map<String, List<_PdfFileEntry>> groups = {};
+    for (final entry in entries) {
+      final header = strings.formatDateHeader(entry.modified);
+      groups.putIfAbsent(header, () => []).add(entry);
     }
     return groups;
   }
@@ -271,7 +300,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
     final theme = Theme.of(context);
     final primaryColor = theme.colorScheme.primary;
 
-    final groupedFiles = _groupByDate(_filteredFiles, strings);
+    final groupedEntries = _groupByDate(_filteredEntries, strings);
 
     return Scaffold(
       appBar: AppBar(
@@ -292,7 +321,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
               : strings.get('btn_see_pdfs'),
         ),
         actions: [
-          if (!_isSelectionMode && _filteredFiles.isNotEmpty)
+          if (!_isSelectionMode && _filteredEntries.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.checklist_rounded),
               tooltip: strings.get('tooltip_batch_select'),
@@ -301,7 +330,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
           if (_isSelectionMode)
             IconButton(
               icon: Icon(
-                _selectedFilePaths.length == _filteredFiles.length
+                _selectedFilePaths.length == _filteredEntries.length
                     ? Icons.deselect_rounded
                     : Icons.select_all_rounded,
               ),
@@ -319,7 +348,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
         child: Column(
           children: [
             // Search Bar
-            if (_pdfFiles.isNotEmpty && !_isSelectionMode)
+            if (_pdfEntries.isNotEmpty && !_isSelectionMode)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
                 child: TextField(
@@ -356,11 +385,11 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                 ),
               ),
 
-            // Main PDF List
+            // Main PDF List (Zero disk I/O during build/scroll - FIX 3)
             Expanded(
               child: _isLoading
                   ? const Center(child: CircularProgressIndicator())
-                  : _filteredFiles.isEmpty
+                  : _filteredEntries.isEmpty
                       ? Center(
                           child: Padding(
                             padding: const EdgeInsets.all(32.0),
@@ -391,10 +420,10 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                           onRefresh: _loadPdfFiles,
                           child: ListView.builder(
                             padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 6.0),
-                            itemCount: groupedFiles.keys.length,
+                            itemCount: groupedEntries.keys.length,
                             itemBuilder: (context, groupIndex) {
-                              final header = groupedFiles.keys.elementAt(groupIndex);
-                              final filesInGroup = groupedFiles[header]!;
+                              final header = groupedEntries.keys.elementAt(groupIndex);
+                              final entriesInGroup = groupedEntries[header]!;
 
                               return Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -417,7 +446,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                                         ),
                                         const SizedBox(width: 6),
                                         Text(
-                                          '(${filesInGroup.length})',
+                                          '(${entriesInGroup.length})',
                                           style: TextStyle(
                                             fontSize: 12,
                                             color: theme.colorScheme.onSurface.withOpacity(0.5),
@@ -428,109 +457,118 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                                   ),
 
                                   // PDF Rows in this date group
-                                  ...filesInGroup.map((file) {
-                                    final name = file.uri.pathSegments.last;
-                                    final stat = file.statSync();
-                                    final bool isSelected = _selectedFilePaths.contains(file.path);
+                                  ...entriesInGroup.map((entry) {
+                                    final bool isSelected = _selectedFilePaths.contains(entry.path);
 
-                                    return Card(
-                                      key: ValueKey(file.path),
-                                      margin: const EdgeInsets.symmetric(vertical: 4.0),
-                                      elevation: 1,
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(14),
-                                        side: isSelected
-                                            ? BorderSide(color: primaryColor, width: 2)
-                                            : BorderSide(color: theme.colorScheme.outline.withOpacity(0.12)),
-                                      ),
-                                      child: InkWell(
-                                        borderRadius: BorderRadius.circular(14),
-                                        onTap: () {
-                                          if (_isSelectionMode) {
-                                            _toggleSelection(file);
-                                          } else {
-                                            // Tapping opens/previews the PDF via FileProvider (FIX 3)
-                                            _openPdf(file);
-                                          }
-                                        },
-                                        onLongPress: () {
-                                          if (!_isSelectionMode) {
-                                            setState(() {
-                                              _isSelectionMode = true;
-                                              _selectedFilePaths.add(file.path);
-                                            });
-                                          }
-                                        },
-                                        child: Padding(
-                                          padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 10.0),
-                                          child: Row(
-                                            children: [
-                                              if (_isSelectionMode)
-                                                Padding(
-                                                  padding: const EdgeInsets.only(right: 8.0),
-                                                  child: Checkbox(
-                                                    value: isSelected,
-                                                    onChanged: (_) => _toggleSelection(file),
-                                                  ),
-                                                )
-                                              else
-                                                Container(
-                                                  padding: const EdgeInsets.all(10),
-                                                  decoration: BoxDecoration(
-                                                    color: Colors.red.shade50,
-                                                    borderRadius: BorderRadius.circular(10),
-                                                    border: Border.all(color: Colors.red.shade100),
-                                                  ),
-                                                  child: const Icon(
-                                                    Icons.picture_as_pdf_rounded,
-                                                    color: Colors.red,
-                                                    size: 26,
-                                                  ),
+                                    return RepaintBoundary(
+                                      child: Card(
+                                        key: ValueKey(entry.path),
+                                        margin: const EdgeInsets.symmetric(vertical: 4.0),
+                                        elevation: 1,
+                                        shape: RoundedRectangleBorder(
+                                          borderRadius: BorderRadius.circular(14),
+                                          side: isSelected
+                                              ? BorderSide(color: primaryColor, width: 2)
+                                              : BorderSide(
+                                                  color: theme.colorScheme.outline.withOpacity(0.12),
                                                 ),
-                                              const SizedBox(width: 12),
-
-                                              // File Info: Filename & Date stamp
-                                              Expanded(
-                                                child: Column(
-                                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                                  children: [
-                                                    Text(
-                                                      name,
-                                                      style: const TextStyle(
-                                                        fontWeight: FontWeight.bold,
-                                                        fontSize: 14,
-                                                      ),
-                                                      maxLines: 1,
-                                                      overflow: TextOverflow.ellipsis,
+                                        ),
+                                        child: InkWell(
+                                          borderRadius: BorderRadius.circular(14),
+                                          onTap: () {
+                                            if (_isSelectionMode) {
+                                              _toggleSelection(entry);
+                                            } else {
+                                              _openPdf(entry);
+                                            }
+                                          },
+                                          onLongPress: () {
+                                            if (!_isSelectionMode) {
+                                              setState(() {
+                                                _isSelectionMode = true;
+                                                _selectedFilePaths.add(entry.path);
+                                              });
+                                            }
+                                          },
+                                          child: Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                              horizontal: 12.0,
+                                              vertical: 10.0,
+                                            ),
+                                            child: Row(
+                                              children: [
+                                                if (_isSelectionMode)
+                                                  Padding(
+                                                    padding: const EdgeInsets.only(right: 8.0),
+                                                    child: Checkbox(
+                                                      value: isSelected,
+                                                      onChanged: (_) => _toggleSelection(entry),
                                                     ),
-                                                    const SizedBox(height: 3),
-                                                    Text(
-                                                      '${_formatTime(stat.modified)} • ${_formatFileSize(stat.size)}',
-                                                      style: TextStyle(
-                                                        fontSize: 12,
-                                                        color: theme.colorScheme.onSurface.withOpacity(0.6),
-                                                      ),
+                                                  )
+                                                else
+                                                  Container(
+                                                    padding: const EdgeInsets.all(10),
+                                                    decoration: BoxDecoration(
+                                                      color: Colors.red.shade50,
+                                                      borderRadius: BorderRadius.circular(10),
+                                                      border: Border.all(color: Colors.red.shade100),
                                                     ),
-                                                  ],
-                                                ),
-                                              ),
+                                                    child: const Icon(
+                                                      Icons.picture_as_pdf_rounded,
+                                                      color: Colors.red,
+                                                      size: 26,
+                                                    ),
+                                                  ),
+                                                const SizedBox(width: 12),
 
-                                              // TWO ACTION BUTTONS: Share and Delete
-                                              if (!_isSelectionMode) ...[
-                                                IconButton(
-                                                  icon: const Icon(Icons.share_outlined, size: 20),
-                                                  tooltip: strings.get('btn_share_pdf'),
-                                                  onPressed: () => _sharePdf(file),
-                                                  visualDensity: VisualDensity.compact,
+                                                // File Info: Pre-computed Filename, Time & Size
+                                                Expanded(
+                                                  child: Column(
+                                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                                    children: [
+                                                      Text(
+                                                        entry.name,
+                                                        style: const TextStyle(
+                                                          fontWeight: FontWeight.bold,
+                                                          fontSize: 14,
+                                                        ),
+                                                        maxLines: 1,
+                                                        overflow: TextOverflow.ellipsis,
+                                                      ),
+                                                      const SizedBox(height: 3),
+                                                      Text(
+                                                        '${_formatTime(entry.modified)} • ${_formatFileSize(entry.sizeBytes)}',
+                                                        style: TextStyle(
+                                                          fontSize: 12,
+                                                          color: theme.colorScheme.onSurface
+                                                              .withOpacity(0.6),
+                                                        ),
+                                                      ),
+                                                    ],
+                                                  ),
                                                 ),
-                                                IconButton(
-                                                  icon: const Icon(Icons.delete_outline_rounded, size: 20, color: Colors.redAccent),
-                                                  tooltip: strings.get('delete_btn'),
-                                                  onPressed: () => _confirmDeletePdf(file),
-                                                  visualDensity: VisualDensity.compact,
-                                                ),
+
+                                                // Share and Delete action buttons
+                                                if (!_isSelectionMode) ...[
+                                                  IconButton(
+                                                    icon: const Icon(Icons.share_outlined, size: 20),
+                                                    tooltip: strings.get('btn_share_pdf'),
+                                                    onPressed: () => _sharePdf(entry),
+                                                    visualDensity: VisualDensity.compact,
+                                                  ),
+                                                  IconButton(
+                                                    icon: const Icon(
+                                                      Icons.delete_outline_rounded,
+                                                      size: 20,
+                                                      color: Colors.redAccent,
+                                                    ),
+                                                    tooltip: strings.get('delete_btn'),
+                                                    onPressed: () => _confirmDeletePdf(entry),
+                                                    visualDensity: VisualDensity.compact,
+                                                  ),
+                                                ],
                                               ],
-                                            ],
+                                            ),
                                           ),
                                         ),
                                       ),
@@ -549,11 +587,11 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                 padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
                 decoration: BoxDecoration(
                   color: theme.cardColor,
-                  boxShadow: [
+                  boxShadow: const [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.08),
+                      color: Color(0x14000000),
                       blurRadius: 6,
-                      offset: const Offset(0, -2),
+                      offset: Offset(0, -2),
                     )
                   ],
                 ),
