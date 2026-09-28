@@ -355,7 +355,7 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Top Editor Toolbar Card (FIX 1: Enhance All removed)
+            // Top Editor Toolbar Card
             Card(
               margin: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
               elevation: 1,

@@ -4,7 +4,7 @@ import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../main.dart';
 import '../services/share_handler_service.dart';
-import 'arrange_screen.dart';
+import 'arrange_pages_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -82,7 +82,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void _navigateToArrange(List<String> paths) {
     Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (context) => ArrangeScreen(initialImagePaths: paths),
+        builder: (context) => ArrangePagesScreen(initialImagePaths: paths),
       ),
     );
   }

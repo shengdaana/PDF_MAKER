@@ -354,7 +354,7 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Top Controls Card (OCR Search Toggle — FIX 1: Enhance All removed)
+            // Top Controls Card (OCR Search Toggle)
             Card(
               margin: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
               elevation: 1,

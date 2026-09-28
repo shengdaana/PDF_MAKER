@@ -47,9 +47,8 @@ class CompressedPageData {
 
 /// Image Processing Engine for PDF Maker
 /// - All heavy decoding, EXIF normalization, perspective rectification (`img.copyRectify`),
-///   rotation, and JPEG compression run off the main UI isolate via `Isolate.run` (FIX 3).
-/// - Untouched full-frame crop corners bypass perspective warp completely (FIX 2).
-/// - All Enhance/filter modes have been removed (FIX 1).
+///   rotation, and JPEG compression run off the main UI isolate via `Isolate.run`.
+/// - Untouched full-frame crop corners bypass perspective warp completely.
 class ImageProcessor {
   /// Rotates a normalized CropQuad clockwise by [degrees] (0, 90, 180, 270).
   static CropQuad rotateQuad(CropQuad quad, int degrees) {

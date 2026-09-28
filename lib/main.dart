@@ -2,8 +2,8 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'models/app_settings.dart';
 import 'screens/home_screen.dart';
-import 'screens/arrange_screen.dart';
-import 'screens/pdf_library_screen.dart';
+import 'screens/arrange_pages_screen.dart';
+import 'screens/generated_pdfs_screen.dart';
 import 'screens/settings_screen.dart';
 
 void main() async {
@@ -221,8 +221,8 @@ class _PdfMakerAppState extends State<PdfMakerApp> {
         initialRoute: '/',
         routes: {
           '/': (context) => const HomeScreen(),
-          '/arrange': (context) => const ArrangeScreen(),
-          '/library': (context) => const PdfLibraryScreen(),
+          '/arrange': (context) => const ArrangePagesScreen(),
+          '/library': (context) => const GeneratedPdfsScreen(),
           '/settings': (context) => const SettingsScreen(),
         },
       ),

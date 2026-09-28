@@ -286,7 +286,7 @@ class _EditScreenState extends State<EditScreen> {
               ),
             ),
 
-            // Balanced Bottom Action Bar: Rotate 90° and Reset Crop (FIX 1: Enhance removed)
+            // Balanced Bottom Action Bar: Rotate 90° and Reset Crop
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 10.0),
               decoration: BoxDecoration(
