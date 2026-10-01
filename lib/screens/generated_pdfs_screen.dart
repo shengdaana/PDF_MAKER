@@ -6,6 +6,7 @@ import 'package:share_plus/share_plus.dart';
 import '../main.dart';
 import '../models/app_settings.dart';
 import '../services/pdf_service.dart';
+import 'pdf_detail_screen.dart';
 
 class _PdfFileEntry {
   final String path;
@@ -34,10 +35,11 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
   List<_PdfFileEntry> _pdfEntries = [];
   List<_PdfFileEntry> _filteredEntries = [];
   bool _isLoading = true;
+  bool _isExporting = false;
   String _searchQuery = '';
   final TextEditingController _searchController = TextEditingController();
 
-  // Batch selection mode
+  // Batch selection mode (Export, Share, Delete)
   bool _isSelectionMode = false;
   final Set<String> _selectedFilePaths = {};
 
@@ -62,7 +64,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
     }
   }
 
-  /// Scans directories and reads file metadata (`statSync`) inside a background isolate (FIX 3)
+  /// Scans directories and reads file metadata (`statSync`) inside a background isolate
   /// so the UI thread never blocks on disk I/O during loading or scrolling.
   Future<void> _loadPdfFiles() async {
     setState(() => _isLoading = true);
@@ -132,8 +134,35 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
     await PdfService.openPdfFile(context, entry.file);
   }
 
+  Future<void> _openPdfDetail(_PdfFileEntry entry) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => PdfDetailScreen(file: entry.file),
+      ),
+    );
+    if (mounted) {
+      _loadPdfFiles();
+    }
+  }
+
   void _sharePdf(_PdfFileEntry entry) {
     Share.shareXFiles([XFile(entry.path)], text: entry.name);
+  }
+
+  Future<void> _exportSinglePdf(_PdfFileEntry entry) async {
+    final strings = AppStateScope.of(context).strings;
+    final String? exported = await PdfService.exportPdfToDownloads(entry.file);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          exported != null
+              ? '${strings.get('msg_exported_single')} ${entry.name}'
+              : strings.get('msg_export_failed'),
+        ),
+      ),
+    );
   }
 
   void _confirmDeletePdf(_PdfFileEntry entry) {
@@ -218,6 +247,36 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
       xFiles,
       text: 'PDF Maker (${_selectedFilePaths.length})',
     );
+  }
+
+  Future<void> _batchExportToDownloads() async {
+    if (_selectedFilePaths.isEmpty || _isExporting) return;
+    final strings = AppStateScope.of(context).strings;
+
+    setState(() => _isExporting = true);
+    try {
+      final int exportedCount =
+          await PdfService.batchExportPdfsToDownloads(_selectedFilePaths);
+      if (!mounted) return;
+      setState(() {
+        _isExporting = false;
+        _selectedFilePaths.clear();
+        _isSelectionMode = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            exportedCount > 0
+                ? strings.exportedMultipleFiles(exportedCount)
+                : strings.get('msg_export_failed'),
+          ),
+        ),
+      );
+    } catch (_) {
+      if (mounted) {
+        setState(() => _isExporting = false);
+      }
+    }
   }
 
   void _batchDelete() {
@@ -317,7 +376,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
             : null,
         title: Text(
           _isSelectionMode
-              ? '${_selectedFilePaths.length} ${strings.get('selected_count')}'
+               ? '${_selectedFilePaths.length} ${strings.get('selected_count')}'
               : strings.get('btn_see_pdfs'),
         ),
         actions: [
@@ -385,7 +444,7 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                 ),
               ),
 
-            // Main PDF List (Zero disk I/O during build/scroll - FIX 3)
+            // Main PDF List (Zero disk I/O during build/scroll)
             Expanded(
               child: _isLoading
                   ? const Center(child: CircularProgressIndicator())
@@ -548,8 +607,20 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                                                   ),
                                                 ),
 
-                                                // Share and Delete action buttons
+                                                // Quick Actions: Preview/Edit, Export to Downloads, Share, Delete
                                                 if (!_isSelectionMode) ...[
+                                                  IconButton(
+                                                    icon: const Icon(Icons.edit_document, size: 20),
+                                                    tooltip: strings.get('tooltip_edit_pdf'),
+                                                    onPressed: () => _openPdfDetail(entry),
+                                                    visualDensity: VisualDensity.compact,
+                                                  ),
+                                                  IconButton(
+                                                    icon: const Icon(Icons.download_rounded, size: 20),
+                                                    tooltip: strings.get('tooltip_export_pdf'),
+                                                    onPressed: () => _exportSinglePdf(entry),
+                                                    visualDensity: VisualDensity.compact,
+                                                  ),
                                                   IconButton(
                                                     icon: const Icon(Icons.share_outlined, size: 20),
                                                     tooltip: strings.get('btn_share_pdf'),
@@ -581,10 +652,10 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                         ),
             ),
 
-            // Batch Action Bottom Bar
+            // Batch Action Bottom Bar (Batch Delete, Batch Export to Downloads, Batch Share)
             if (_isSelectionMode && _selectedFilePaths.isNotEmpty)
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 10.0),
                 decoration: BoxDecoration(
                   color: theme.cardColor,
                   boxShadow: const [
@@ -597,27 +668,70 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
                 ),
                 child: Row(
                   children: [
+                    // 1. Batch Delete
                     Expanded(
                       child: OutlinedButton.icon(
                         style: OutlinedButton.styleFrom(
                           foregroundColor: Colors.redAccent,
                           side: const BorderSide(color: Colors.redAccent),
                           minimumSize: const Size(0, 48),
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
                         ),
-                        onPressed: _batchDelete,
-                        icon: const Icon(Icons.delete_outline_rounded, size: 20),
-                        label: Text('${strings.get('delete_btn')} (${_selectedFilePaths.length})'),
+                        onPressed: _isExporting ? null : _batchDelete,
+                        icon: const Icon(Icons.delete_outline_rounded, size: 18),
+                        label: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            '${strings.get('delete_btn')} (${_selectedFilePaths.length})',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                          ),
+                        ),
                       ),
                     ),
-                    const SizedBox(width: 12),
+                    const SizedBox(width: 8),
+
+                    // 2. Batch Export to Downloads
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          minimumSize: const Size(0, 48),
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                        ),
+                        onPressed: _isExporting ? null : _batchExportToDownloads,
+                        icon: _isExporting
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.download_rounded, size: 18),
+                        label: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            '${strings.get('batch_export_short')} (${_selectedFilePaths.length})',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+
+                    // 3. Batch Share
                     Expanded(
                       child: ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(
                           minimumSize: const Size(0, 48),
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
                         ),
-                        onPressed: _batchShare,
-                        icon: const Icon(Icons.share_rounded, size: 20),
-                        label: Text('${strings.get('btn_share_short')} (${_selectedFilePaths.length})'),
+                        onPressed: _isExporting ? null : _batchShare,
+                        icon: const Icon(Icons.share_rounded, size: 18),
+                        label: FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            '${strings.get('btn_share_short')} (${_selectedFilePaths.length})',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                          ),
+                        ),
                       ),
                     ),
                   ],

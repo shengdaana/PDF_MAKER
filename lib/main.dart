@@ -5,31 +5,38 @@ import 'screens/home_screen.dart';
 import 'screens/arrange_pages_screen.dart';
 import 'screens/generated_pdfs_screen.dart';
 import 'screens/settings_screen.dart';
+import 'utils/image_processor.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Cap decoded image cache to 100 MB / 150 images for smooth 60fps memory behavior
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 100 << 20;
+  PaintingBinding.instance.imageCache.maximumSize = 150;
+
   final settings = await AppSettings.load();
   runApp(PdfMakerApp(initialSettings: settings));
+
+  // Asynchronously clean up stale temporary preview files in the background
+  ImageProcessor.cleanupOldTempFiles();
 }
 
 class AppStateScope extends InheritedWidget {
   final AppSettings settings;
+  final AppStrings strings;
   final Function(AppSettings) onSettingsChanged;
 
-  const AppStateScope({
+  AppStateScope({
     super.key,
     required this.settings,
     required this.onSettingsChanged,
     required super.child,
-  });
+  }) : strings = AppStrings(settings.language);
 
   static AppStateScope of(BuildContext context) {
     final AppStateScope? result = context.dependOnInheritedWidgetOfExactType<AppStateScope>();
     assert(result != null, 'No AppStateScope found in context');
     return result!;
   }
-
-  AppStrings get strings => AppStrings(settings.language);
 
   @override
   bool updateShouldNotify(AppStateScope oldWidget) {

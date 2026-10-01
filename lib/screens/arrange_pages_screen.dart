@@ -31,6 +31,10 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
   double _generationProgress = 0.0;
   String _generationStatus = '';
 
+  // Batch page selection mode
+  bool _isSelectionMode = false;
+  final Set<String> _selectedPageIds = {};
+
   @override
   void initState() {
     super.initState();
@@ -53,7 +57,7 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
     super.dispose();
   }
 
-  /// Generates downsampled thumbnails in a background isolate once per photo (FIX 3)
+  /// Generates downsampled thumbnails in parallel batches across the native worker pool
   /// so list cards and EditScreen previews never decode full camera-resolution photos on the UI thread.
   Future<void> _loadInitialPhotos() async {
     setState(() => _isLoading = true);
@@ -62,25 +66,14 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
       final String tempDirPath = tempDir.path;
       final int nowMs = DateTime.now().millisecondsSinceEpoch;
 
-      for (int i = 0; i < widget.initialImagePaths.length; i++) {
-        final String path = widget.initialImagePaths[i];
-        final String id = '${nowMs}_$i';
-        final String thumbPath = await ImageProcessor.generateDownsampledThumbnail(
-          sourcePath: path,
-          tempDirPath: tempDirPath,
-          pageId: id,
-          maxDimension: 960,
-        );
+      final List<PdfPageItem> items = await ImageProcessor.generateThumbnailsBatch(
+        sourcePaths: widget.initialImagePaths,
+        tempDirPath: tempDirPath,
+        idPrefix: '$nowMs',
+        maxDimension: 960,
+      );
 
-        _pages.add(
-          PdfPageItem(
-            id: id,
-            sourcePath: path,
-            basePreviewPath: thumbPath,
-            currentPreviewPath: thumbPath,
-          ),
-        );
-      }
+      _pages.addAll(items);
     } catch (e) {
       debugPrint('Error loading initial photos: $e');
     } finally {
@@ -103,26 +96,13 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
       final tempDir = await getTemporaryDirectory();
       final String tempDirPath = tempDir.path;
       final int nowMs = DateTime.now().millisecondsSinceEpoch;
-      final List<PdfPageItem> newItems = [];
 
-      for (int i = 0; i < picked.length; i++) {
-        final String path = picked[i].path;
-        final String id = '${nowMs}_add_$i';
-        final String thumbPath = await ImageProcessor.generateDownsampledThumbnail(
-          sourcePath: path,
-          tempDirPath: tempDirPath,
-          pageId: id,
-          maxDimension: 960,
-        );
-        newItems.add(
-          PdfPageItem(
-            id: id,
-            sourcePath: path,
-            basePreviewPath: thumbPath,
-            currentPreviewPath: thumbPath,
-          ),
-        );
-      }
+      final List<PdfPageItem> newItems = await ImageProcessor.generateThumbnailsBatch(
+        sourcePaths: picked.map((e) => e.path).toList(),
+        tempDirPath: tempDirPath,
+        idPrefix: '${nowMs}_add',
+        maxDimension: 960,
+      );
 
       if (mounted) {
         setState(() {
@@ -167,7 +147,11 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
     final originalIndex = index;
 
     setState(() {
+      _selectedPageIds.remove(deletedItem.id);
       _pages.removeAt(index);
+      if (_selectedPageIds.isEmpty) {
+        _isSelectionMode = false;
+      }
     });
 
     ScaffoldMessenger.of(context).clearSnackBars();
@@ -178,7 +162,66 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
           label: strings.get('btn_undo'),
           onPressed: () {
             setState(() {
-              _pages.insert(originalIndex, deletedItem);
+              final insertIdx = originalIndex.clamp(0, _pages.length);
+              _pages.insert(insertIdx, deletedItem);
+            });
+          },
+        ),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  void _togglePageSelection(String pageId) {
+    setState(() {
+      if (_selectedPageIds.contains(pageId)) {
+        _selectedPageIds.remove(pageId);
+        if (_selectedPageIds.isEmpty) {
+          _isSelectionMode = false;
+        }
+      } else {
+        _selectedPageIds.add(pageId);
+      }
+    });
+  }
+
+  void _toggleSelectAllPages() {
+    setState(() {
+      if (_selectedPageIds.length == _pages.length) {
+        _selectedPageIds.clear();
+        _isSelectionMode = false;
+      } else {
+        _selectedPageIds.clear();
+        for (final p in _pages) {
+          _selectedPageIds.add(p.id);
+        }
+      }
+    });
+  }
+
+  void _batchDeleteSelectedPages() {
+    if (_selectedPageIds.isEmpty) return;
+    final strings = AppStateScope.of(context).strings;
+    final List<PdfPageItem> backupPages = List.from(_pages);
+    final int deleteCount = _selectedPageIds.length;
+
+    setState(() {
+      _pages.removeWhere((p) => _selectedPageIds.contains(p.id));
+      _selectedPageIds.clear();
+      _isSelectionMode = false;
+    });
+
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(strings.deletedMultiplePages(deleteCount)),
+        action: SnackBarAction(
+          label: strings.get('btn_undo'),
+          onPressed: () {
+            setState(() {
+              _pages
+                ..clear()
+                ..addAll(backupPages);
             });
           },
         ),
@@ -342,13 +385,53 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('${strings.get('arrange_title')} (${_pages.length})'),
+        leading: _isSelectionMode
+            ? IconButton(
+                icon: const Icon(Icons.close_rounded),
+                onPressed: () {
+                  setState(() {
+                    _isSelectionMode = false;
+                    _selectedPageIds.clear();
+                  });
+                },
+              )
+            : null,
+        title: Text(
+          _isSelectionMode
+              ? '${_selectedPageIds.length} ${strings.get('selected_count')}'
+              : '${strings.get('arrange_title')} (${_pages.length})',
+        ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.add_photo_alternate_rounded, size: 26),
-            tooltip: strings.get('btn_add_photos'),
-            onPressed: (_isGeneratingPdf || _isLoading) ? null : _addMorePhotos,
-          ),
+          if (!_isSelectionMode && _pages.length > 1)
+            IconButton(
+              icon: const Icon(Icons.checklist_rounded),
+              tooltip: strings.get('batch_delete'),
+              onPressed: (_isGeneratingPdf || _isLoading)
+                  ? null
+                  : () => setState(() => _isSelectionMode = true),
+            ),
+          if (_isSelectionMode) ...[
+            IconButton(
+              icon: Icon(
+                _selectedPageIds.length == _pages.length
+                    ? Icons.deselect_rounded
+                    : Icons.select_all_rounded,
+              ),
+              tooltip: strings.get('select_all'),
+              onPressed: _toggleSelectAllPages,
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+              tooltip: strings.get('batch_delete'),
+              onPressed: _selectedPageIds.isEmpty ? null : _batchDeleteSelectedPages,
+            ),
+          ],
+          if (!_isSelectionMode)
+            IconButton(
+              icon: const Icon(Icons.add_photo_alternate_rounded, size: 26),
+              tooltip: strings.get('btn_add_photos'),
+              onPressed: (_isGeneratingPdf || _isLoading) ? null : _addMorePhotos,
+            ),
         ],
       ),
       body: SafeArea(
@@ -428,7 +511,7 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                 ),
               ),
 
-            // Hero Cards Page List (with downsampled thumbnails & cacheWidth for 60fps scroll - FIX 3)
+            // Hero Cards Page List (with downsampled thumbnails & cacheWidth for 60fps scroll)
             Expanded(
               child: _isLoading
                   ? const Center(child: CircularProgressIndicator())
@@ -442,6 +525,7 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                             final page = _pages[index];
                             final isFirst = index == 0;
                             final isLast = index == _pages.length - 1;
+                            final bool isSelected = _selectedPageIds.contains(page.id);
 
                             final cardContent = RepaintBoundary(
                               child: Card(
@@ -451,9 +535,26 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                                 elevation: 2,
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(18),
+                                  side: isSelected
+                                      ? BorderSide(color: primaryColor, width: 3)
+                                      : BorderSide.none,
                                 ),
                                 child: InkWell(
-                                  onTap: () => _openEditScreen(index),
+                                  onTap: () {
+                                    if (_isSelectionMode) {
+                                      _togglePageSelection(page.id);
+                                    } else {
+                                      _openEditScreen(index);
+                                    }
+                                  },
+                                  onLongPress: () {
+                                    if (!_isSelectionMode) {
+                                      setState(() {
+                                        _isSelectionMode = true;
+                                        _selectedPageIds.add(page.id);
+                                      });
+                                    }
+                                  },
                                   child: Stack(
                                     children: [
                                       // 1. Downsampled Photo Card Background with cacheWidth
@@ -505,33 +606,45 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                                         ),
                                       ),
 
-                                      // 3. Top-Right: Floating Delete Page Button
+                                      // 3. Top-Right: Checkbox (in Selection Mode) or Delete Page Button
                                       Positioned(
                                         top: 8,
                                         right: 8,
-                                        child: Material(
-                                          color: const Color(0xAA000000),
-                                          shape: const CircleBorder(),
-                                          child: InkWell(
-                                            customBorder: const CircleBorder(),
-                                            onTap: () => _deletePage(index),
-                                            child: Padding(
-                                              padding: const EdgeInsets.all(8.0),
-                                              child: Tooltip(
-                                                message: strings.get('tooltip_delete_page'),
-                                                child: const Icon(
-                                                  Icons.delete_outline_rounded,
-                                                  size: 20,
-                                                  color: Colors.white,
+                                        child: _isSelectionMode
+                                            ? Container(
+                                                decoration: const BoxDecoration(
+                                                  color: Color(0xCC000000),
+                                                  shape: BoxShape.circle,
+                                                ),
+                                                child: Checkbox(
+                                                  value: isSelected,
+                                                  onChanged: (_) => _togglePageSelection(page.id),
+                                                  side: const BorderSide(color: Colors.white, width: 2),
+                                                ),
+                                              )
+                                            : Material(
+                                                color: const Color(0xAA000000),
+                                                shape: const CircleBorder(),
+                                                child: InkWell(
+                                                  customBorder: const CircleBorder(),
+                                                  onTap: () => _deletePage(index),
+                                                  child: Padding(
+                                                    padding: const EdgeInsets.all(8.0),
+                                                    child: Tooltip(
+                                                      message: strings.get('tooltip_delete_page'),
+                                                      child: const Icon(
+                                                        Icons.delete_outline_rounded,
+                                                        size: 20,
+                                                        color: Colors.white,
+                                                      ),
+                                                    ),
+                                                  ),
                                                 ),
                                               ),
-                                            ),
-                                          ),
-                                        ),
                                       ),
 
                                       // 4. Right Side: Semi-Transparent Reorder Arrows Overlay
-                                      if (!settings.hideReorderArrows)
+                                      if (!settings.hideReorderArrows && !_isSelectionMode)
                                         Positioned(
                                           right: 8,
                                           top: 90,
@@ -661,7 +774,7 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                         ),
             ),
 
-            // Fixed Bottom Bar: "+ Add Photos" and "Create PDF Now"
+            // Fixed Bottom Bar: Batch Delete (in selection mode) OR "+ Add Photos" & "Create PDF Now"
             Container(
               padding: const EdgeInsets.all(16.0),
               decoration: BoxDecoration(
@@ -674,38 +787,72 @@ class _ArrangePagesScreenState extends State<ArrangePagesScreen> {
                   )
                 ],
               ),
-              child: Row(
-                children: [
-                  Expanded(
-                    flex: 2,
-                    child: OutlinedButton.icon(
-                      onPressed: (_isGeneratingPdf || _isLoading) ? null : _addMorePhotos,
-                      icon: const Icon(Icons.add_photo_alternate_rounded, size: 20),
-                      label: FittedBox(
-                        child: Text(
-                          strings.get('btn_add_photos'),
-                          style: const TextStyle(fontWeight: FontWeight.bold),
+              child: _isSelectionMode
+                  ? Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _toggleSelectAllPages,
+                            icon: Icon(
+                              _selectedPageIds.length == _pages.length
+                                  ? Icons.deselect_rounded
+                                  : Icons.select_all_rounded,
+                              size: 20,
+                            ),
+                            label: Text(strings.get('select_all')),
+                          ),
                         ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    flex: 3,
-                    child: ElevatedButton.icon(
-                      onPressed:
-                          (_pages.isEmpty || _isGeneratingPdf || _isLoading) ? null : _onStartPdfCreation,
-                      icon: const Icon(Icons.picture_as_pdf_rounded, size: 22),
-                      label: FittedBox(
-                        child: Text(
-                          strings.get('btn_create_pdf'),
-                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.redAccent,
+                              foregroundColor: Colors.white,
+                            ),
+                            onPressed:
+                                _selectedPageIds.isEmpty ? null : _batchDeleteSelectedPages,
+                            icon: const Icon(Icons.delete_outline_rounded, size: 20),
+                            label: Text(
+                              '${strings.get('delete_btn')} (${_selectedPageIds.length})',
+                              style: const TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                          ),
                         ),
-                      ),
+                      ],
+                    )
+                  : Row(
+                      children: [
+                        Expanded(
+                          flex: 2,
+                          child: OutlinedButton.icon(
+                            onPressed: (_isGeneratingPdf || _isLoading) ? null : _addMorePhotos,
+                            icon: const Icon(Icons.add_photo_alternate_rounded, size: 20),
+                            label: FittedBox(
+                              child: Text(
+                                strings.get('btn_add_photos'),
+                                style: const TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          flex: 3,
+                          child: ElevatedButton.icon(
+                            onPressed: (_pages.isEmpty || _isGeneratingPdf || _isLoading)
+                                ? null
+                                : _onStartPdfCreation,
+                            icon: const Icon(Icons.picture_as_pdf_rounded, size: 22),
+                            label: FittedBox(
+                              child: Text(
+                                strings.get('btn_create_pdf'),
+                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                ],
-              ),
             ),
           ],
         ),

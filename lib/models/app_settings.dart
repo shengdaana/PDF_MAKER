@@ -203,11 +203,18 @@ class AppStrings {
       'merge_toggle_desc': 'Join two photos vertically onto a single PDF page',
       'dark_mode_title': 'Dark Mode',
       'dark_mode_desc': 'Use dark background across the app',
-      'batch_export': 'Share Selected',
+      'batch_export': 'Export to Downloads',
+      'batch_export_short': 'Export',
       'batch_delete': 'Delete Selected',
       'select_all': 'Select All',
       'selected_count': 'Selected',
       'edit_pdf': 'Edit PDF',
+      'tooltip_edit_pdf': 'Preview / Edit PDF',
+      'tooltip_export_pdf': 'Save copy to Downloads',
+      'msg_exported_single': 'Saved copy to Downloads/PDF Maker:',
+      'msg_export_failed': 'Could not export to Downloads',
+      'delete_pages_confirm_title': 'Delete Selected Pages?',
+      'delete_pages_confirm_desc': 'Are you sure you want to remove the selected pages from this document?',
       'pdf_editor_title': 'Edit PDF',
       'edit_crop_btn': 'Crop / Rotate',
       'ocr_search_short': 'OCR Search',
@@ -325,11 +332,18 @@ class AppStrings {
       'merge_toggle_desc': 'दो फोटो को ऊपर-नीचे एक ही पेज पर जोड़ने का ऑप्शन दिखाएं',
       'dark_mode_title': 'डार्क मोड (Dark Mode)',
       'dark_mode_desc': 'रात में आंखों के आराम के लिए काली स्क्रीन चालू करें',
-      'batch_export': 'एक साथ शेयर करें',
+      'batch_export': 'Downloads में सेव करें',
+      'batch_export_short': 'एक्सपोर्ट',
       'batch_delete': 'एक साथ डिलीट करें',
       'select_all': 'सभी चुनें',
       'selected_count': 'चुने गए',
       'edit_pdf': 'PDF एडिट करें',
+      'tooltip_edit_pdf': 'PDF देखें / एडिट करें',
+      'tooltip_export_pdf': 'Downloads में कॉपी सेव करें',
+      'msg_exported_single': 'Downloads/PDF Maker में सेव हो गई:',
+      'msg_export_failed': 'Downloads में सेव नहीं हो पाई',
+      'delete_pages_confirm_title': 'चुने हुए पेज हटाएं?',
+      'delete_pages_confirm_desc': 'क्या आप चुने हुए सभी पेज इस लिस्ट से हटाना चाहते हैं?',
       'pdf_editor_title': 'PDF एडिट करें',
       'edit_crop_btn': 'क्रॉप / घुमाएं',
       'ocr_search_short': 'टेक्स्ट सर्च (OCR)',
@@ -447,11 +461,18 @@ class AppStrings {
       'merge_toggle_desc': 'Do photos ko upar-neeche ek hi PDF page pe jodne ka button dikhayein',
       'dark_mode_title': 'Dark Mode',
       'dark_mode_desc': 'Poore app me dark background chalu karein',
-      'batch_export': 'Ek Sath Share Karein',
+      'batch_export': 'Downloads me Save Karein',
+      'batch_export_short': 'Export',
       'batch_delete': 'Ek Sath Delete Karein',
       'select_all': 'Sab Chunein',
       'selected_count': 'Selected',
       'edit_pdf': 'PDF Edit Karein',
+      'tooltip_edit_pdf': 'PDF Dekhein / Edit Karein',
+      'tooltip_export_pdf': 'Downloads me copy save karein',
+      'msg_exported_single': 'Downloads/PDF Maker me save ho gayi:',
+      'msg_export_failed': 'Downloads me save nahi ho payi',
+      'delete_pages_confirm_title': 'Selected Pages Hatayein?',
+      'delete_pages_confirm_desc': 'Kya aap select kiye hue saare pages hatana chahte ho?',
       'pdf_editor_title': 'PDF Edit Karein',
       'edit_crop_btn': 'Crop / Rotate',
       'ocr_search_short': 'Text Search (OCR)',
@@ -570,6 +591,28 @@ class AppStrings {
         return '$count files delete kar di gayin';
       case AppLanguage.english:
         return 'Deleted $count files';
+    }
+  }
+
+  String exportedMultipleFiles(int count) {
+    switch (language) {
+      case AppLanguage.everydayHindi:
+        return '$count PDF फाइलें Downloads/PDF Maker फोल्डर में सेव हो गईं';
+      case AppLanguage.hinglish:
+        return '$count PDFs Downloads/PDF Maker folder me save ho gayin';
+      case AppLanguage.english:
+        return 'Exported $count PDFs to Downloads/PDF Maker';
+    }
+  }
+
+  String deletedMultiplePages(int count) {
+    switch (language) {
+      case AppLanguage.everydayHindi:
+        return '$count पेज हटा दिए गए';
+      case AppLanguage.hinglish:
+        return '$count pages hata diye gaye';
+      case AppLanguage.english:
+        return 'Removed $count pages';
     }
   }
 

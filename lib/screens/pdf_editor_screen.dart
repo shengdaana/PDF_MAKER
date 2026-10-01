@@ -119,26 +119,13 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
       final tempDir = await getTemporaryDirectory();
       final String tempDirPath = tempDir.path;
       final int nowMs = DateTime.now().millisecondsSinceEpoch;
-      final List<PdfPageItem> added = [];
 
-      for (int i = 0; i < picked.length; i++) {
-        final String path = picked[i].path;
-        final String id = 'added_${nowMs}_$i';
-        final String thumbPath = await ImageProcessor.generateDownsampledThumbnail(
-          sourcePath: path,
-          tempDirPath: tempDirPath,
-          pageId: id,
-          maxDimension: 960,
-        );
-        added.add(
-          PdfPageItem(
-            id: id,
-            sourcePath: path,
-            basePreviewPath: thumbPath,
-            currentPreviewPath: thumbPath,
-          ),
-        );
-      }
+      final List<PdfPageItem> added = await ImageProcessor.generateThumbnailsBatch(
+        sourcePaths: picked.map((e) => e.path).toList(),
+        tempDirPath: tempDirPath,
+        idPrefix: 'added_$nowMs',
+        maxDimension: 960,
+      );
 
       if (mounted) {
         setState(() {
