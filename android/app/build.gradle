@@ -69,7 +69,9 @@ flutter {
     source '../..'
 }
 
-dependencies {}
+dependencies {
+    implementation "androidx.documentfile:documentfile:1.0.1"
+}
  
 tasks.whenTaskAdded { task ->
     if (task.name.contains("checkReleaseAarMetadata") || task.name.contains("CheckAarMetadata")) {

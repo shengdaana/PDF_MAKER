@@ -24,16 +24,17 @@ class _SuccessScreenState extends State<SuccessScreen> {
     _currentFileName = widget.result.fileName;
   }
 
-  void _sharePdf() {
+  Future<void> _sharePdf() async {
     final strings = AppStateScope.of(context).strings;
+    final sharePath = await PdfService.getShareableFilePath(_currentFile.path, _currentFileName);
     Share.shareXFiles(
-      [XFile(_currentFile.path)],
+      [XFile(sharePath)],
       text: '${strings.get('share_pdf_text')}: $_currentFileName',
     );
   }
 
   void _openPdf() {
-    PdfService.openPdfFile(context, _currentFile);
+    PdfService.openPdfFile(context, _currentFile.path);
   }
 
   void _showRenameDialog() {
@@ -208,7 +209,7 @@ class _SuccessScreenState extends State<SuccessScreen> {
                       ),
                       const Divider(height: 24),
                       Text(
-                        '${strings.get('label_location')}: ${_currentFile.path}',
+                        '${strings.get('label_location')}: ${widget.result.savedPath.isNotEmpty ? widget.result.savedPath : _currentFile.path}',
                         style: TextStyle(
                           fontSize: 11,
                           color: theme.colorScheme.onSurface.withOpacity(0.5),

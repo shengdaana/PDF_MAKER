@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../main.dart';
 import '../models/app_settings.dart';
+import '../services/pdf_service.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -299,17 +300,95 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
             // 6. Default Save Folder
             Card(
-              child: ListTile(
-                leading: const Icon(Icons.folder_shared_rounded),
-                title: Text(strings.get('save_folder_title')),
-                subtitle: Text(settings.saveFolder),
-                trailing: TextButton(
-                  onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text(strings.get('msg_folder_active'))),
-                    );
-                  },
-                  child: Text(strings.get('btn_change_folder')),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          settings.saveFolderUri.isNotEmpty
+                              ? Icons.create_new_folder_rounded
+                              : Icons.folder_shared_rounded,
+                          color: primaryColor,
+                          size: 24,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                strings.get('save_folder_title'),
+                                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                settings.saveFolder,
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: primaryColor,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      settings.saveFolderUri.isNotEmpty
+                          ? '${strings.get('custom_folder_active')} ${settings.saveFolder}'
+                          : strings.get('msg_folder_active'),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurface.withOpacity(0.65),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        if (settings.saveFolderUri.isNotEmpty) ...[
+                          TextButton.icon(
+                            onPressed: () {
+                              settings.saveFolder = 'Documents/PDF Maker';
+                              settings.saveFolderUri = '';
+                              update(settings);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text(strings.get('msg_folder_active'))),
+                              );
+                            },
+                            icon: const Icon(Icons.restore_rounded, size: 18),
+                            label: Text(strings.get('btn_reset_folder')),
+                          ),
+                          const SizedBox(width: 8),
+                        ],
+                        ElevatedButton.icon(
+                          onPressed: () async {
+                            final folder = await PdfService.pickCustomFolder();
+                            if (folder != null && context.mounted) {
+                              final uri = folder['uri'] ?? '';
+                              final display = folder['displayPath'] ?? 'Custom Folder';
+                              if (uri.isNotEmpty) {
+                                settings.saveFolder = display;
+                                settings.saveFolderUri = uri;
+                                update(settings);
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('${strings.get('custom_folder_active')} $display'),
+                                  ),
+                                );
+                              }
+                            }
+                          },
+                          icon: const Icon(Icons.folder_open_rounded, size: 18),
+                          label: Text(strings.get('btn_change_folder')),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
             ),

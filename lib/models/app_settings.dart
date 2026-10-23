@@ -35,6 +35,7 @@ class AppSettings {
   bool hideReorderArrows;
   bool mergePagesBetweenPages;
   String saveFolder;
+  String saveFolderUri;
 
   AppSettings({
     this.themePalette = AppThemePalette.indigoBlue,
@@ -46,6 +47,7 @@ class AppSettings {
     this.hideReorderArrows = false,
     this.mergePagesBetweenPages = false,
     this.saveFolder = 'Documents/PDF Maker',
+    this.saveFolderUri = '',
   });
 
   static const String _keyTheme = 'setting_theme';
@@ -57,6 +59,7 @@ class AppSettings {
   static const String _keyHideArrows = 'setting_hide_arrows';
   static const String _keyMergePages = 'setting_merge_pages';
   static const String _keyFolder = 'setting_folder';
+  static const String _keyFolderUri = 'setting_folder_uri';
 
   Future<void> save() async {
     final prefs = await SharedPreferences.getInstance();
@@ -69,6 +72,7 @@ class AppSettings {
     await prefs.setBool(_keyHideArrows, hideReorderArrows);
     await prefs.setBool(_keyMergePages, mergePagesBetweenPages);
     await prefs.setString(_keyFolder, saveFolder);
+    await prefs.setString(_keyFolderUri, saveFolderUri);
   }
 
   static Future<AppSettings> load() async {
@@ -81,6 +85,7 @@ class AppSettings {
     if (folder == 'Documents/PDF Maker Pro') {
       folder = 'Documents/PDF Maker';
     }
+    final folderUri = prefs.getString(_keyFolderUri) ?? '';
 
     return AppSettings(
       themePalette: AppThemePalette.values.firstWhere(
@@ -104,6 +109,7 @@ class AppSettings {
       hideReorderArrows: prefs.getBool(_keyHideArrows) ?? false,
       mergePagesBetweenPages: prefs.getBool(_keyMergePages) ?? false,
       saveFolder: folder,
+      saveFolderUri: folderUri,
     );
   }
 }
@@ -219,10 +225,11 @@ class AppStrings {
       'edit_crop_btn': 'Crop / Rotate',
       'ocr_search_short': 'OCR Search',
       'save_changes': 'Save Changes',
-      'save_as_copy': 'Save New Copy',
-      'save_folder_title': 'Saved PDFs Folder',
-      'btn_change_folder': 'Info',
+      'save_folder_title': 'Default Save Folder',
+      'btn_change_folder': 'Change',
+      'btn_reset_folder': 'Reset to Default',
       'msg_folder_active': 'PDFs are saved in your phone\'s public Documents/PDF Maker folder so they stay safe even if you uninstall the app.',
+      'custom_folder_active': 'Custom folder active: PDFs will be saved to',
       'privacy_title': '100% Offline & Private',
       'privacy_desc': 'No internet permission, no ads, and no data tracking. All your photos and PDFs stay only on your phone.',
       'licenses_title': 'Open Source Licenses',
@@ -350,8 +357,10 @@ class AppStrings {
       'save_changes': 'बदलाव सेव करें',
       'save_as_copy': 'नई कॉपी सेव करें',
       'save_folder_title': 'PDF सेव होने का फोल्डर',
-      'btn_change_folder': 'जानकारी',
+      'btn_change_folder': 'बदलें (Change)',
+      'btn_reset_folder': 'डिफ़ॉल्ट सेट करें',
       'msg_folder_active': 'आपकी सभी PDF फोन के Documents/PDF Maker फोल्डर में सेव होती हैं। ऐप अनइंस्टॉल करने पर भी आपकी PDF डिलीट नहीं होंगी।',
+      'custom_folder_active': 'कस्टम फोल्डर चुना गया: PDF यहां सेव होंगी:',
       'privacy_title': '100% ऑफलाइन और सुरक्षित',
       'privacy_desc': 'यह ऐप बिना इंटरनेट के चलता है। कोई विज्ञापन नहीं, कोई डेटा ट्रैक नहीं होता — आपकी फोटो और PDF सिर्फ आपके फोन में रहती हैं।',
       'licenses_title': 'ओपन सोर्स लाइसेंस (Licenses)',
@@ -478,9 +487,11 @@ class AppStrings {
       'ocr_search_short': 'Text Search (OCR)',
       'save_changes': 'Changes Save Karein',
       'save_as_copy': 'Nayi Copy Save Karein',
-      'save_folder_title': 'PDF Save Hone ka Folder',
-      'btn_change_folder': 'Info',
+      'save_folder_title': 'Default Save Folder',
+      'btn_change_folder': 'Change',
+      'btn_reset_folder': 'Reset karein',
       'msg_folder_active': 'Aapki saari PDFs phone ke public Documents/PDF Maker folder me save hoti hain. App uninstall karne pe bhi PDFs delete nahi hongi.',
+      'custom_folder_active': 'Custom folder selected: PDFs yahan save hongi:',
       'privacy_title': '100% Offline & Safe',
       'privacy_desc': 'Bina internet ke chalta hai. Koi ads nahi, koi data tracking nahi — aapke photos aur PDFs sirf aapke phone me rehte hain.',
       'licenses_title': 'Open Source Licenses',

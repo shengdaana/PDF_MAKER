@@ -64,31 +64,53 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
     }
   }
 
-  /// Scans directories and reads file metadata (`statSync`) inside a background isolate
-  /// so the UI thread never blocks on disk I/O during loading or scrolling.
+  /// Scans directories and native MediaStore/SAF via background worker & channel
+  /// so all generated PDFs are listed correctly and UI thread never blocks on disk I/O.
   Future<void> _loadPdfFiles() async {
     setState(() => _isLoading = true);
 
     try {
       await _checkStoragePermission();
 
+      final settings = AppStateScope.of(context).settings;
+      final nativeList = await PdfService.listGeneratedPdfs(settings);
+
+      final Set<String> seenNamesAndPaths = {};
+      final List<_PdfFileEntry> loaded = [];
+
+      for (final item in nativeList) {
+        final path = item['path'] as String? ?? '';
+        final name = item['name'] as String? ?? '';
+        final sizeBytes = item['sizeBytes'] as int? ?? 0;
+        final modifiedMs = item['modifiedMs'] as int? ?? 0;
+        if (name.isNotEmpty) {
+          seenNamesAndPaths.add(name);
+          if (path.isNotEmpty) seenNamesAndPaths.add(path);
+          loaded.add(
+            _PdfFileEntry(
+              path: path,
+              name: name,
+              sizeBytes: sizeBytes,
+              modified: DateTime.fromMillisecondsSinceEpoch(
+                modifiedMs > 0 ? modifiedMs : DateTime.now().millisecondsSinceEpoch,
+              ),
+            ),
+          );
+        }
+      }
+
       final searchDirs = await PdfService.getAllPdfSearchDirectories();
       final List<String> dirPaths = searchDirs.map((d) => d.path).toList();
 
-      final List<_PdfFileEntry> loaded = await Isolate.run(() {
-        final Set<String> seenPaths = {};
+      final List<_PdfFileEntry> localScanned = await Isolate.run(() {
         final List<_PdfFileEntry> entries = [];
-
         for (final dirPath in dirPaths) {
           final dir = Directory(dirPath);
           if (!dir.existsSync()) continue;
           try {
             final entities = dir.listSync();
             for (final entity in entities) {
-              if (entity is File &&
-                  entity.path.toLowerCase().endsWith('.pdf') &&
-                  !seenPaths.contains(entity.path)) {
-                seenPaths.add(entity.path);
+              if (entity is File && entity.path.toLowerCase().endsWith('.pdf')) {
                 final stat = entity.statSync();
                 final name = entity.uri.pathSegments.last;
                 entries.add(
@@ -103,11 +125,18 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
             }
           } catch (_) {}
         }
-
-        entries.sort((a, b) => b.modified.compareTo(a.modified));
         return entries;
       });
 
+      for (final entry in localScanned) {
+        if (!seenNamesAndPaths.contains(entry.name) && !seenNamesAndPaths.contains(entry.path)) {
+          seenNamesAndPaths.add(entry.name);
+          seenNamesAndPaths.add(entry.path);
+          loaded.add(entry);
+        }
+      }
+
+      loaded.sort((a, b) => b.modified.compareTo(a.modified));
       _pdfEntries = loaded;
       _applySearch();
     } catch (e) {
@@ -131,14 +160,19 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
   }
 
   Future<void> _openPdf(_PdfFileEntry entry) async {
-    await PdfService.openPdfFile(context, entry.file);
+    await PdfService.openPdfFile(context, entry.path);
   }
 
   Future<void> _openPdfDetail(_PdfFileEntry entry) async {
     await Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => PdfDetailScreen(file: entry.file),
+        builder: (context) => PdfDetailScreen(
+          file: entry.file,
+          initialName: entry.name,
+          initialSize: entry.sizeBytes,
+          initialModified: entry.modified,
+        ),
       ),
     );
     if (mounted) {
@@ -146,13 +180,14 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
     }
   }
 
-  void _sharePdf(_PdfFileEntry entry) {
-    Share.shareXFiles([XFile(entry.path)], text: entry.name);
+  Future<void> _sharePdf(_PdfFileEntry entry) async {
+    final sharePath = await PdfService.getShareableFilePath(entry.path, entry.name);
+    await Share.shareXFiles([XFile(sharePath)], text: entry.name);
   }
 
   Future<void> _exportSinglePdf(_PdfFileEntry entry) async {
     final strings = AppStateScope.of(context).strings;
-    final String? exported = await PdfService.exportPdfToDownloads(entry.file);
+    final String? exported = await PdfService.exportPdfToDownloads(entry.path);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -188,14 +223,15 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
             onPressed: () async {
               Navigator.pop(ctx);
               try {
-                final file = entry.file;
-                if (await file.exists()) {
-                  await file.delete();
-                }
+                final ok = await PdfService.deletePdfFile(entry.path);
                 _loadPdfFiles();
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text(strings.deletedSingleFile(fileName))),
+                    SnackBar(
+                      content: Text(
+                        ok ? strings.deletedSingleFile(fileName) : strings.get('msg_export_failed'),
+                      ),
+                    ),
                   );
                 }
               } catch (e) {
@@ -240,10 +276,15 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
     });
   }
 
-  void _batchShare() {
+  Future<void> _batchShare() async {
     if (_selectedFilePaths.isEmpty) return;
-    final List<XFile> xFiles = _selectedFilePaths.map((p) => XFile(p)).toList();
-    Share.shareXFiles(
+    final List<XFile> xFiles = [];
+    for (final path in _selectedFilePaths) {
+      final name = path.contains('/') ? path.split('/').last : 'document.pdf';
+      final sharePath = await PdfService.getShareableFilePath(path, name);
+      xFiles.add(XFile(sharePath));
+    }
+    await Share.shareXFiles(
       xFiles,
       text: 'PDF Maker (${_selectedFilePaths.length})',
     );
@@ -304,11 +345,8 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
               int count = 0;
               for (final path in _selectedFilePaths) {
                 try {
-                  final f = File(path);
-                  if (await f.exists()) {
-                    await f.delete();
-                    count++;
-                  }
+                  final ok = await PdfService.deletePdfFile(path);
+                  if (ok) count++;
                 } catch (_) {}
               }
               setState(() {

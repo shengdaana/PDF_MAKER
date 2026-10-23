@@ -274,6 +274,7 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
         hideReorderArrows: appSettings.hideReorderArrows,
         mergePagesBetweenPages: appSettings.mergePagesBetweenPages,
         saveFolder: appSettings.saveFolder,
+        saveFolderUri: appSettings.saveFolderUri,
       );
 
       final result = await PdfService.generatePdf(

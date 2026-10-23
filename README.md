@@ -47,11 +47,13 @@
 - **Built-in PDF Detail & Page Editor:** Preview individual pages of any existing PDF, rename files, add more photos, reorder/rotate/crop pages, or save changes as a new copy or in-place.
 - **Zero-Permission External Viewer Launching:** Opens PDFs in any installed PDF reader using Android `FileProvider` (`content://` URI + `FLAG_GRANT_READ_URI_PERMISSION`) without requiring `MANAGE_EXTERNAL_STORAGE`.
 
-### 6. Persistent Public Storage (Survives App Uninstallation)
-- Generated PDFs are written directly to public shared storage at:
-  - **Primary Folder:** `/storage/emulated/0/Documents/PDF Maker/`
-  - **Export Folder:** `/storage/emulated/0/Download/PDF Maker/`
-- Files are indexed immediately via `MediaScannerConnection` / `MediaStore` and **never** deleted if the user uninstalls the app.
+### 6. Persistent Storage & Custom Save Location (Internal Storage & SD Card)
+- **Unified Single Source of Truth:** Both PDF generation and the "See Generated PDFs" library screen read from the same configured destination:
+  - **Default Public Location:** `/storage/emulated/0/Documents/PDF Maker/` (scoped storage compliant via MediaStore, never deleted on app uninstallation).
+  - **Custom Folder (SAF Directory Picker):** Change the save destination to any folder on internal storage or external SD card using Android's native Storage Access Framework (`ACTION_OPEN_DOCUMENT_TREE`).
+  - **Persistable Permissions:** The app requests and takes persistable read/write URI permissions (`takePersistableUriPermission`) so subsequent runs and library listings persist across phone restarts.
+  - **Settings UI Integration:** The Settings screen displays the active folder path with a working **Change** button and a **Reset to Default** option.
+  - **Automatic Library Scan:** "See Generated PDFs" lists existing PDFs saved before or after configuration changes without requiring manual rescanning.
 
 ### 7. Trilingual Localization & Accessible Material 3 Themes
 - **100% Translated UI:** Switch instantaneously between:
