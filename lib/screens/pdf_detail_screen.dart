@@ -192,33 +192,25 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
                 String sanitized = raw.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
                 if (sanitized.isEmpty) sanitized = 'document';
 
-                final parentDir = _currentFile.parent;
-                String finalName = '$sanitized.pdf';
-                File targetFile = File('${parentDir.path}/$finalName');
-
-                int counter = 1;
-                while (await targetFile.exists() && targetFile.path != _currentFile.path) {
-                  finalName = '$sanitized($counter).pdf';
-                  targetFile = File('${parentDir.path}/$finalName');
-                  counter++;
-                }
-
-                if (targetFile.path == _currentFile.path) {
+                final String requestedName = '$sanitized.pdf';
+                if (requestedName == _currentFileName) {
                   Navigator.pop(ctx);
                   return;
                 }
 
                 try {
-                  final renamed = await _currentFile.rename(targetFile.path);
-                  setState(() {
-                    _currentFile = renamed;
-                    _currentFileName = finalName;
-                  });
-                  if (mounted) {
-                    Navigator.pop(ctx);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('${strings.get('msg_renamed_to')} $finalName')),
-                    );
+                  final res = await PdfService.renamePdfFile(_currentFile.path, requestedName);
+                  if (res != null) {
+                    setState(() {
+                      _currentFile = File(res['path']!);
+                      _currentFileName = res['name']!;
+                    });
+                    if (mounted) {
+                      Navigator.pop(ctx);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('${strings.get('msg_renamed_to')} ${res['name']}')),
+                      );
+                    }
                   }
                 } catch (e) {
                   debugPrint('Error renaming: $e');

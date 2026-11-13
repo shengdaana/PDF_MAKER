@@ -65,7 +65,7 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
     });
 
     try {
-      final Uint8List pdfBytes = await widget.pdfFile.readAsBytes();
+      final Uint8List pdfBytes = await PdfService.readPdfBytes(widget.pdfFile.path);
       final tempDir = await getTemporaryDirectory();
       int pageIndex = 0;
 
@@ -293,20 +293,24 @@ class _PdfEditorScreenState extends State<PdfEditorScreen> {
       );
 
       if (!saveAsNewCopy) {
-        await result.file.copy(widget.pdfFile.path);
+        final newBytes = await PdfService.readPdfBytes(result.file.path);
+        await PdfService.overwritePdfBytes(widget.pdfFile.path, newBytes);
         try {
           if (result.file.path != widget.pdfFile.path) {
-            await result.file.delete();
+            await PdfService.deletePdfFile(result.file.path);
           }
         } catch (_) {}
       }
 
       if (mounted) {
+        final displayTargetName = widget.pdfFile.path.contains('/')
+            ? Uri.decodeComponent(widget.pdfFile.path.split('/').last)
+            : widget.pdfFile.uri.pathSegments.last;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(saveAsNewCopy
                 ? '${strings.get('msg_saved_new_copy')} ${result.fileName}'
-                : '${strings.get('msg_changes_saved_to')} ${widget.pdfFile.uri.pathSegments.last}'),
+                : '${strings.get('msg_changes_saved_to')} $displayTargetName'),
           ),
         );
         Navigator.pop(context, saveAsNewCopy ? result.file : widget.pdfFile);

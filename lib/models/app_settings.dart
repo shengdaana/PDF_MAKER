@@ -225,6 +225,7 @@ class AppStrings {
       'edit_crop_btn': 'Crop / Rotate',
       'ocr_search_short': 'OCR Search',
       'save_changes': 'Save Changes',
+      'save_as_copy': 'Save New Copy',
       'save_folder_title': 'Default Save Folder',
       'btn_change_folder': 'Change',
       'btn_reset_folder': 'Reset to Default',

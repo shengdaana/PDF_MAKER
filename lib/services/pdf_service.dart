@@ -190,6 +190,63 @@ class PdfService {
     return path;
   }
 
+  /// Renames a PDF file across both local filesystem and SAF content:// URIs.
+  static Future<Map<String, String>?> renamePdfFile(String path, String newFileName) async {
+    if (Platform.isAndroid) {
+      try {
+        final Map<dynamic, dynamic>? res = await _nativeChannel.invokeMethod<Map<dynamic, dynamic>>(
+          'renamePdf',
+          {'path': path, 'newName': newFileName},
+        );
+        if (res != null) {
+          final String newPath = res['path']?.toString() ?? path;
+          final String newName = res['name']?.toString() ?? newFileName;
+          return {'path': newPath, 'name': newName};
+        }
+      } catch (e) {
+        debugPrint('Native renamePdf fallback: $e');
+      }
+    }
+    if (!path.startsWith('content://')) {
+      final currentFile = File(path);
+      final parentDir = currentFile.parent;
+      final base = newFileName.endsWith('.pdf')
+          ? newFileName.substring(0, newFileName.length - 4)
+          : newFileName;
+      String finalName = '$base.pdf';
+      File targetFile = File('${parentDir.path}/$finalName');
+      int counter = 1;
+      while (await targetFile.exists() && targetFile.path != currentFile.path) {
+        finalName = '$base($counter).pdf';
+        targetFile = File('${parentDir.path}/$finalName');
+        counter++;
+      }
+      final renamed = await currentFile.rename(targetFile.path);
+      return {'path': renamed.path, 'name': finalName};
+    }
+    return null;
+  }
+
+  /// Overwrites an existing PDF file (both local filesystem and SAF content:// URIs).
+  static Future<bool> overwritePdfBytes(String path, Uint8List bytes) async {
+    if (Platform.isAndroid) {
+      try {
+        final bool? ok = await _nativeChannel.invokeMethod<bool>(
+          'overwritePdf',
+          {'path': path, 'bytes': bytes},
+        );
+        if (ok == true) return true;
+      } catch (e) {
+        debugPrint('Native overwritePdf fallback: $e');
+      }
+    }
+    if (!path.startsWith('content://')) {
+      await File(path).writeAsBytes(bytes, flush: true);
+      return true;
+    }
+    return false;
+  }
+
   /// Exports a single PDF file or path to `/storage/emulated/0/Download/PDF Maker/`
   /// via the native Android MediaStore / Downloads channel.
   static Future<String?> exportPdfToDownloads(dynamic sourceFileOrPath) async {
@@ -595,7 +652,8 @@ class PdfService {
     String finalPath = '';
     if (Platform.isAndroid) {
       try {
-        final String? savedPath = await _nativeChannel.invokeMethod<String>(
+        final Map<dynamic, dynamic>? saveResult =
+            await _nativeChannel.invokeMethod<Map<dynamic, dynamic>>(
           'savePdf',
           {
             'fileName': fileName,
@@ -603,6 +661,7 @@ class PdfService {
             'folderUri': settings.saveFolderUri,
           },
         );
+        final String? savedPath = saveResult?['path']?.toString();
         if (savedPath != null && savedPath.isNotEmpty) {
           finalPath = savedPath;
           savedFile = File(savedPath);

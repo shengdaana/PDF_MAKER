@@ -42,11 +42,15 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
   // Batch selection mode (Export, Share, Delete)
   bool _isSelectionMode = false;
   final Set<String> _selectedFilePaths = {};
+  bool _hasLoadedInitial = false;
 
   @override
-  void initState() {
-    super.initState();
-    _loadPdfFiles();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_hasLoadedInitial) {
+      _hasLoadedInitial = true;
+      _loadPdfFiles();
+    }
   }
 
   @override
@@ -57,22 +61,26 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
 
   Future<void> _checkStoragePermission() async {
     if (Platform.isAndroid) {
-      final status = await Permission.storage.status;
-      if (!status.isGranted) {
-        await Permission.storage.request();
-      }
+      try {
+        final status = await Permission.storage.status;
+        if (!status.isGranted) {
+          await Permission.storage.request();
+        }
+      } catch (_) {}
     }
   }
 
   /// Scans directories and native MediaStore/SAF via background worker & channel
   /// so all generated PDFs are listed correctly and UI thread never blocks on disk I/O.
   Future<void> _loadPdfFiles() async {
+    if (!mounted) return;
     setState(() => _isLoading = true);
 
     try {
-      await _checkStoragePermission();
-
       final settings = AppStateScope.of(context).settings;
+      await _checkStoragePermission();
+      if (!mounted) return;
+
       final nativeList = await PdfService.listGeneratedPdfs(settings);
 
       final Set<String> seenNamesAndPaths = {};
@@ -81,8 +89,9 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
       for (final item in nativeList) {
         final path = item['path'] as String? ?? '';
         final name = item['name'] as String? ?? '';
-        final sizeBytes = item['sizeBytes'] as int? ?? 0;
-        final modifiedMs = item['modifiedMs'] as int? ?? 0;
+        final sizeBytes = (item['sizeBytes'] as num?)?.toInt() ?? 0;
+        final modifiedMs =
+            (item['modified'] as num?)?.toInt() ?? (item['modifiedMs'] as num?)?.toInt() ?? 0;
         if (name.isNotEmpty) {
           seenNamesAndPaths.add(name);
           if (path.isNotEmpty) seenNamesAndPaths.add(path);
@@ -99,40 +108,42 @@ class _GeneratedPdfsScreenState extends State<GeneratedPdfsScreen> {
         }
       }
 
-      final searchDirs = await PdfService.getAllPdfSearchDirectories();
-      final List<String> dirPaths = searchDirs.map((d) => d.path).toList();
+      if (settings.saveFolderUri.isEmpty) {
+        final searchDirs = await PdfService.getAllPdfSearchDirectories();
+        final List<String> dirPaths = searchDirs.map((d) => d.path).toList();
 
-      final List<_PdfFileEntry> localScanned = await Isolate.run(() {
-        final List<_PdfFileEntry> entries = [];
-        for (final dirPath in dirPaths) {
-          final dir = Directory(dirPath);
-          if (!dir.existsSync()) continue;
-          try {
-            final entities = dir.listSync();
-            for (final entity in entities) {
-              if (entity is File && entity.path.toLowerCase().endsWith('.pdf')) {
-                final stat = entity.statSync();
-                final name = entity.uri.pathSegments.last;
-                entries.add(
-                  _PdfFileEntry(
-                    path: entity.path,
-                    name: name,
-                    sizeBytes: stat.size,
-                    modified: stat.modified,
-                  ),
-                );
+        final List<_PdfFileEntry> localScanned = await Isolate.run(() {
+          final List<_PdfFileEntry> entries = [];
+          for (final dirPath in dirPaths) {
+            final dir = Directory(dirPath);
+            if (!dir.existsSync()) continue;
+            try {
+              final entities = dir.listSync();
+              for (final entity in entities) {
+                if (entity is File && entity.path.toLowerCase().endsWith('.pdf')) {
+                  final stat = entity.statSync();
+                  final name = entity.uri.pathSegments.last;
+                  entries.add(
+                    _PdfFileEntry(
+                      path: entity.path,
+                      name: name,
+                      sizeBytes: stat.size,
+                      modified: stat.modified,
+                    ),
+                  );
+                }
               }
-            }
-          } catch (_) {}
-        }
-        return entries;
-      });
+            } catch (_) {}
+          }
+          return entries;
+        });
 
-      for (final entry in localScanned) {
-        if (!seenNamesAndPaths.contains(entry.name) && !seenNamesAndPaths.contains(entry.path)) {
-          seenNamesAndPaths.add(entry.name);
-          seenNamesAndPaths.add(entry.path);
-          loaded.add(entry);
+        for (final entry in localScanned) {
+          if (!seenNamesAndPaths.contains(entry.name) && !seenNamesAndPaths.contains(entry.path)) {
+            seenNamesAndPaths.add(entry.name);
+            seenNamesAndPaths.add(entry.path);
+            loaded.add(entry);
+          }
         }
       }
 

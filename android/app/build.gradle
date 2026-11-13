@@ -65,6 +65,14 @@ android {
         includeInBundle = false
     }
 
+    def hasReleaseKeystore = keystoreFile.exists() &&
+        System.getenv("RELEASE_STORE_PASSWORD") != null &&
+        !System.getenv("RELEASE_STORE_PASSWORD").trim().isEmpty() &&
+        System.getenv("RELEASE_KEY_ALIAS") != null &&
+        !System.getenv("RELEASE_KEY_ALIAS").trim().isEmpty() &&
+        System.getenv("RELEASE_KEY_PASSWORD") != null &&
+        !System.getenv("RELEASE_KEY_PASSWORD").trim().isEmpty()
+
     signingConfigs {
         release {
             storeFile keystoreFile
@@ -76,7 +84,7 @@ android {
 
     buildTypes {
         release {
-            signingConfig signingConfigs.release
+            signingConfig hasReleaseKeystore ? signingConfigs.release : signingConfigs.debug
             minifyEnabled false
             shrinkResources false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
@@ -88,15 +96,10 @@ flutter {
     source '../..'
 }
 
-<<<<<<< HEAD
-dependencies {}
-
-=======
 dependencies {
     implementation "androidx.documentfile:documentfile:1.0.1"
 }
- 
->>>>>>> f88f56269111d613d5f2ba259e342308c794a6d6
+
 tasks.whenTaskAdded { task ->
     if (task.name.contains("checkReleaseAarMetadata") || task.name.contains("CheckAarMetadata")) {
         task.enabled = false

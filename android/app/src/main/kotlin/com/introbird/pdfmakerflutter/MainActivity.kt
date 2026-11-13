@@ -189,6 +189,111 @@ class MainActivity : FlutterActivity() {
                         }
                     }
 
+                    "renamePdf" -> {
+                        val path = call.argument<String>("path")
+                        val newName = call.argument<String>("newName")
+                        if (path.isNullOrBlank() || newName.isNullOrBlank()) {
+                            result.error("INVALID_ARGS", "Missing path or newName", null)
+                            return@setMethodCallHandler
+                        }
+                        workerPool.execute {
+                            try {
+                                if (path.startsWith("content://")) {
+                                    val uri = Uri.parse(path)
+                                    val doc = DocumentFile.fromSingleUri(applicationContext, uri)
+                                        ?: throw IllegalStateException("Cannot access document URI: $path")
+                                    val renamed = doc.renameTo(newName)
+                                    if (!renamed) {
+                                        throw IllegalStateException("Failed to rename document")
+                                    }
+                                    mainHandler.post {
+                                        result.success(hashMapOf(
+                                            "path" to doc.uri.toString(),
+                                            "name" to (doc.name ?: newName)
+                                        ))
+                                    }
+                                } else {
+                                    val sourceFile = File(path)
+                                    if (!sourceFile.exists()) {
+                                        throw IllegalStateException("File does not exist: $path")
+                                    }
+                                    val parentDir = sourceFile.parentFile
+                                    var targetFile = File(parentDir, newName)
+                                    val base = newName.removeSuffix(".pdf")
+                                    var counter = 1
+                                    while (targetFile.exists() && targetFile.absolutePath != sourceFile.absolutePath) {
+                                        targetFile = File(parentDir, "$base($counter).pdf")
+                                        counter++
+                                    }
+                                    if (targetFile.absolutePath != sourceFile.absolutePath) {
+                                        if (!sourceFile.renameTo(targetFile)) {
+                                            sourceFile.copyTo(targetFile, overwrite = true)
+                                            sourceFile.delete()
+                                        }
+                                        MediaScannerConnection.scanFile(
+                                            applicationContext,
+                                            arrayOf(sourceFile.absolutePath, targetFile.absolutePath),
+                                            arrayOf("application/pdf", "application/pdf"),
+                                            null
+                                        )
+                                    }
+                                    mainHandler.post {
+                                        result.success(hashMapOf(
+                                            "path" to targetFile.absolutePath,
+                                            "name" to targetFile.name
+                                        ))
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                mainHandler.post {
+                                    result.error("RENAME_ERROR", e.localizedMessage ?: "Failed to rename PDF", null)
+                                }
+                            }
+                        }
+                    }
+
+                    "overwritePdf" -> {
+                        val path = call.argument<String>("path")
+                        val bytes = call.argument<ByteArray>("bytes")
+                        if (path.isNullOrBlank() || bytes == null) {
+                            result.error("INVALID_ARGS", "Missing path or bytes", null)
+                            return@setMethodCallHandler
+                        }
+                        workerPool.execute {
+                            try {
+                                if (path.startsWith("content://")) {
+                                    val uri = Uri.parse(path)
+                                    applicationContext.contentResolver.openOutputStream(uri, "wt")?.use { os ->
+                                        os.write(bytes)
+                                        os.flush()
+                                    } ?: applicationContext.contentResolver.openOutputStream(uri)?.use { os ->
+                                        os.write(bytes)
+                                        os.flush()
+                                    } ?: throw IllegalStateException("Cannot open output stream for: $path")
+                                    mainHandler.post { result.success(true) }
+                                } else {
+                                    val file = File(path)
+                                    file.parentFile?.mkdirs()
+                                    FileOutputStream(file).use { fos ->
+                                        fos.write(bytes)
+                                        fos.flush()
+                                    }
+                                    MediaScannerConnection.scanFile(
+                                        applicationContext,
+                                        arrayOf(file.absolutePath),
+                                        arrayOf("application/pdf"),
+                                        null
+                                    )
+                                    mainHandler.post { result.success(true) }
+                                }
+                            } catch (e: Exception) {
+                                mainHandler.post {
+                                    result.error("OVERWRITE_ERROR", e.localizedMessage ?: "Failed to overwrite PDF", null)
+                                }
+                            }
+                        }
+                    }
+
                     "savePdf" -> {
                         val fileName = call.argument<String>("fileName")
                         val bytes = call.argument<ByteArray>("bytes")
@@ -310,12 +415,19 @@ class MainActivity : FlutterActivity() {
                                             MediaStore.Files.FileColumns.DATE_MODIFIED,
                                             MediaStore.Files.FileColumns.DATA
                                         )
-                                        val selection = "(${MediaStore.Files.FileColumns.MIME_TYPE} = ? OR ${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.pdf') AND " +
-                                            "(${MediaStore.Files.FileColumns.DATA} LIKE '%/Documents/PDF Maker/%' OR " +
-                                            "${MediaStore.Files.FileColumns.DATA} LIKE '%/Documents/PDF Maker Pro/%' OR " +
-                                            "${MediaStore.Files.FileColumns.DATA} LIKE '%/Documents/PDF documents(pdf_maker)/%' OR " +
-                                            "${MediaStore.Files.FileColumns.RELATIVE_PATH} LIKE 'Documents/PDF Maker%' OR " +
-                                            "${MediaStore.Files.FileColumns.RELATIVE_PATH} LIKE 'Documents/PDF Maker Pro%')"
+                                        val selection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                            "(${MediaStore.Files.FileColumns.MIME_TYPE} = ? OR ${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.pdf') AND " +
+                                                "(${MediaStore.Files.FileColumns.DATA} LIKE '%/Documents/PDF Maker/%' OR " +
+                                                "${MediaStore.Files.FileColumns.DATA} LIKE '%/Documents/PDF Maker Pro/%' OR " +
+                                                "${MediaStore.Files.FileColumns.DATA} LIKE '%/Documents/PDF documents(pdf_maker)/%' OR " +
+                                                "${MediaStore.Files.FileColumns.RELATIVE_PATH} LIKE 'Documents/PDF Maker%' OR " +
+                                                "${MediaStore.Files.FileColumns.RELATIVE_PATH} LIKE 'Documents/PDF Maker Pro%')"
+                                        } else {
+                                            "(${MediaStore.Files.FileColumns.MIME_TYPE} = ? OR ${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.pdf') AND " +
+                                                "(${MediaStore.Files.FileColumns.DATA} LIKE '%/Documents/PDF Maker/%' OR " +
+                                                "${MediaStore.Files.FileColumns.DATA} LIKE '%/Documents/PDF Maker Pro/%' OR " +
+                                                "${MediaStore.Files.FileColumns.DATA} LIKE '%/Documents/PDF documents(pdf_maker)/%')"
+                                        }
                                         val selectionArgs = arrayOf("application/pdf")
 
                                         applicationContext.contentResolver.query(
@@ -345,7 +457,12 @@ class MainActivity : FlutterActivity() {
                                                     ContentUris.withAppendedId(queryUri, id).toString()
                                                 } else null
 
-                                                val filePath = dataPath ?: contentUri ?: ""
+                                                val filePath = when {
+                                                    !dataPath.isNullOrBlank() && File(dataPath).let { it.exists() && it.canRead() } -> dataPath
+                                                    !contentUri.isNullOrBlank() -> contentUri
+                                                    else -> dataPath ?: ""
+                                                }
+                                                if (filePath.isEmpty()) continue
                                                 val key = displayName.lowercase()
                                                 if (seenKeys.add(key)) {
                                                     list.add(mapOf(
