@@ -22,6 +22,16 @@ if (flutterVersionName == null) {
     flutterVersionName = '1.0'
 }
 
+/*
+ * Decode the release keystore supplied through the Codespaces secret.
+ * The keystore is created locally during the build and is not committed.
+ */
+def keystoreFile = file("release.keystore")
+def keystoreBase64 = System.getenv("KEYSTORE_BASE64")
+
+if (keystoreBase64 != null && !keystoreBase64.trim().isEmpty() && !keystoreFile.exists()) {
+    keystoreFile.bytes = java.util.Base64.decoder.decode(keystoreBase64.trim())
+}
 
 android {
     namespace "com.introbird.pdfmakerflutter"
@@ -55,9 +65,18 @@ android {
         includeInBundle = false
     }
 
+    signingConfigs {
+        release {
+            storeFile keystoreFile
+            storePassword System.getenv("RELEASE_STORE_PASSWORD")
+            keyAlias System.getenv("RELEASE_KEY_ALIAS")
+            keyPassword System.getenv("RELEASE_KEY_PASSWORD")
+        }
+    }
+
     buildTypes {
         release {
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
             minifyEnabled false
             shrinkResources false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
@@ -70,7 +89,7 @@ flutter {
 }
 
 dependencies {}
- 
+
 tasks.whenTaskAdded { task ->
     if (task.name.contains("checkReleaseAarMetadata") || task.name.contains("CheckAarMetadata")) {
         task.enabled = false

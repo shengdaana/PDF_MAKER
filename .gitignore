@@ -16,3 +16,5 @@
 local.properties
 .env
 debug.keystore
+android/key.properties
+android/app/release.keystore
