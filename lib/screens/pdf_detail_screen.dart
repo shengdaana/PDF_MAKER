@@ -9,8 +9,17 @@ import 'pdf_editor_screen.dart';
 
 class PdfDetailScreen extends StatefulWidget {
   final File file;
+  final String? initialName;
+  final int? initialSize;
+  final DateTime? initialModified;
 
-  const PdfDetailScreen({super.key, required this.file});
+  const PdfDetailScreen({
+    super.key,
+    required this.file,
+    this.initialName,
+    this.initialSize,
+    this.initialModified,
+  });
 
   @override
   State<PdfDetailScreen> createState() => _PdfDetailScreenState();
@@ -28,7 +37,12 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
   void initState() {
     super.initState();
     _currentFile = widget.file;
-    _currentFileName = widget.file.uri.pathSegments.last;
+    _currentFileName = widget.initialName ??
+        (_currentFile.path.contains('/')
+            ? _currentFile.path.split('/').last
+            : _currentFile.uri.pathSegments.last);
+    _fileSizeBytes = widget.initialSize;
+    _fileModified = widget.initialModified;
     _loadPagePreviews();
   }
 
@@ -37,19 +51,22 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
     final List<Uint8List> loaded = [];
 
     try {
-      if (await _currentFile.exists()) {
-        final stat = await _currentFile.stat();
+      final Uint8List pdfBytes = await PdfService.readPdfBytes(_currentFile.path);
+      _fileSizeBytes = widget.initialSize ?? pdfBytes.length;
+      _fileModified = widget.initialModified ?? DateTime.now();
+
+      if (_currentFile.existsSync()) {
+        final stat = _currentFile.statSync();
         _fileSizeBytes = stat.size;
         _fileModified = stat.modified;
+      }
 
-        final Uint8List pdfBytes = await _currentFile.readAsBytes();
-        int count = 0;
-        await for (final page in Printing.raster(pdfBytes, dpi: 100)) {
-          final pngBytes = await page.toPng();
-          loaded.add(pngBytes);
-          count++;
-          if (count >= 20) break;
-        }
+      int count = 0;
+      await for (final page in Printing.raster(pdfBytes, dpi: 100)) {
+        final pngBytes = await page.toPng();
+        loaded.add(pngBytes);
+        count++;
+        if (count >= 20) break;
       }
     } catch (e) {
       debugPrint('Error loading PDF page previews: $e');
@@ -63,16 +80,17 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
     }
   }
 
-  void _sharePdf() {
+  Future<void> _sharePdf() async {
     final strings = AppStateScope.of(context).strings;
-    Share.shareXFiles(
-      [XFile(_currentFile.path)],
+    final sharePath = await PdfService.getShareableFilePath(_currentFile.path, _currentFileName);
+    await Share.shareXFiles(
+      [XFile(sharePath)],
       text: '${strings.get('share_pdf_text')}: $_currentFileName',
     );
   }
 
   void _openInExternalViewer() {
-    PdfService.openPdfFile(context, _currentFile);
+    PdfService.openPdfFile(context, _currentFile.path);
   }
 
   void _deletePdf() {
@@ -97,7 +115,7 @@ class _PdfDetailScreenState extends State<PdfDetailScreen> {
               ),
               onPressed: () async {
                 try {
-                  await _currentFile.delete();
+                  await PdfService.deletePdfFile(_currentFile.path);
                   if (mounted) {
                     Navigator.pop(ctx);
                     Navigator.pop(context, true);

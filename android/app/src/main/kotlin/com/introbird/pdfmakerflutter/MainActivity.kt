@@ -1,6 +1,8 @@
 package com.introbird.pdfmakerflutter
 
+import android.app.Activity
 import android.content.ActivityNotFoundException
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Intent
 import android.graphics.Bitmap
@@ -16,8 +18,10 @@ import android.os.Build
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import androidx.core.content.FileProvider
+import androidx.documentfile.provider.DocumentFile
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -36,12 +40,28 @@ class MainActivity : FlutterActivity() {
         Runtime.getRuntime().availableProcessors().coerceIn(2, 4)
     )
 
+    private val REQUEST_CODE_PICK_DIRECTORY = 4289
+    private var pendingDirectoryResult: MethodChannel.Result? = null
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
+                    "pickDirectory" -> {
+                        pendingDirectoryResult = result
+                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                            addFlags(
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or
+                                Intent.FLAG_GRANT_PREFIX_URI_PERMISSION
+                            )
+                        }
+                        startActivityForResult(intent, REQUEST_CODE_PICK_DIRECTORY)
+                    }
+
                     "openPdf" -> {
                         val filePath = call.argument<String>("path")
                         if (filePath.isNullOrBlank()) {
@@ -49,13 +69,17 @@ class MainActivity : FlutterActivity() {
                             return@setMethodCallHandler
                         }
                         try {
-                            val file = File(filePath)
-                            if (!file.exists()) {
-                                result.error("FILE_NOT_FOUND", "PDF file does not exist: $filePath", null)
-                                return@setMethodCallHandler
+                            val contentUri: Uri = if (filePath.startsWith("content://")) {
+                                Uri.parse(filePath)
+                            } else {
+                                val file = File(filePath)
+                                if (!file.exists()) {
+                                    result.error("FILE_NOT_FOUND", "PDF file does not exist: $filePath", null)
+                                    return@setMethodCallHandler
+                                }
+                                val authority = "${applicationContext.packageName}.fileprovider"
+                                FileProvider.getUriForFile(this, authority, file)
                             }
-                            val authority = "${applicationContext.packageName}.fileprovider"
-                            val contentUri: Uri = FileProvider.getUriForFile(this, authority, file)
 
                             val viewIntent = Intent(Intent.ACTION_VIEW).apply {
                                 setDataAndType(contentUri, "application/pdf")
@@ -68,6 +92,157 @@ class MainActivity : FlutterActivity() {
                             result.error("NO_VIEWER", "No PDF viewer app installed on this device.", null)
                         } catch (e: Exception) {
                             result.error("OPEN_ERROR", e.localizedMessage ?: "Failed to open PDF", null)
+                        }
+                    }
+
+                    "deletePdf" -> {
+                        val path = call.argument<String>("path")
+                        if (path.isNullOrBlank()) {
+                            result.error("INVALID_ARGS", "Missing path", null)
+                            return@setMethodCallHandler
+                        }
+                        workerPool.execute {
+                            try {
+                                var deleted = false
+                                if (path.startsWith("content://")) {
+                                    val uri = Uri.parse(path)
+                                    try {
+                                        val doc = DocumentFile.fromSingleUri(applicationContext, uri)
+                                        if (doc != null && doc.exists()) {
+                                            deleted = doc.delete()
+                                        }
+                                    } catch (_: Exception) {}
+                                    if (!deleted) {
+                                        try {
+                                            val count = applicationContext.contentResolver.delete(uri, null, null)
+                                            deleted = count > 0
+                                        } catch (_: Exception) {}
+                                    }
+                                } else {
+                                    val f = File(path)
+                                    if (f.exists()) {
+                                        deleted = f.delete()
+                                    }
+                                    try {
+                                        applicationContext.contentResolver.delete(
+                                            MediaStore.Files.getContentUri("external"),
+                                            "${MediaStore.Files.FileColumns.DATA} = ?",
+                                            arrayOf(path)
+                                        )
+                                    } catch (_: Exception) {}
+                                }
+                                mainHandler.post { result.success(deleted) }
+                            } catch (e: Exception) {
+                                mainHandler.post { result.error("DELETE_ERROR", e.localizedMessage ?: "Failed to delete PDF", null) }
+                            }
+                        }
+                    }
+
+                    "readPdfBytes" -> {
+                        val path = call.argument<String>("path")
+                        if (path.isNullOrBlank()) {
+                            result.error("INVALID_ARGS", "Missing path", null)
+                            return@setMethodCallHandler
+                        }
+                        workerPool.execute {
+                            try {
+                                val bytes: ByteArray? = if (path.startsWith("content://")) {
+                                    applicationContext.contentResolver.openInputStream(Uri.parse(path))?.use { it.readBytes() }
+                                } else {
+                                    val f = File(path)
+                                    if (f.exists()) f.readBytes() else null
+                                }
+                                if (bytes != null) {
+                                    mainHandler.post { result.success(bytes) }
+                                } else {
+                                    mainHandler.post { result.error("READ_ERROR", "Could not read bytes for: $path", null) }
+                                }
+                            } catch (e: Exception) {
+                                mainHandler.post { result.error("READ_ERROR", e.localizedMessage ?: "Failed to read PDF bytes", null) }
+                            }
+                        }
+                    }
+
+                    "getShareableFilePath" -> {
+                        val path = call.argument<String>("path")
+                        val fileName = call.argument<String>("fileName") ?: "document.pdf"
+                        if (path.isNullOrBlank()) {
+                            result.error("INVALID_ARGS", "Missing path", null)
+                            return@setMethodCallHandler
+                        }
+                        workerPool.execute {
+                            try {
+                                if (path.startsWith("content://")) {
+                                    val cacheFile = File(cacheDir, "share_${System.currentTimeMillis()}_$fileName")
+                                    applicationContext.contentResolver.openInputStream(Uri.parse(path))?.use { input ->
+                                        FileOutputStream(cacheFile).use { output ->
+                                            input.copyTo(output)
+                                        }
+                                    }
+                                    mainHandler.post { result.success(cacheFile.absolutePath) }
+                                } else {
+                                    mainHandler.post { result.success(path) }
+                                }
+                            } catch (e: Exception) {
+                                mainHandler.post { result.error("SHARE_ERROR", e.localizedMessage ?: "Failed to prepare share file", null) }
+                            }
+                        }
+                    }
+
+                    "savePdf" -> {
+                        val fileName = call.argument<String>("fileName")
+                        val bytes = call.argument<ByteArray>("bytes")
+                        val folderUri = call.argument<String>("folderUri")
+                        if (fileName.isNullOrBlank() || bytes == null) {
+                            result.error("INVALID_ARGS", "Missing fileName or bytes", null)
+                            return@setMethodCallHandler
+                        }
+                        workerPool.execute {
+                            try {
+                                // 1. Custom SAF Directory (if folderUri is set)
+                                if (!folderUri.isNullOrBlank()) {
+                                    val treeUri = Uri.parse(folderUri)
+                                    val pickedDir = DocumentFile.fromTreeUri(applicationContext, treeUri)
+                                        ?: throw IllegalStateException("Cannot access custom directory URI: $folderUri")
+
+                                    val existing = pickedDir.findFile(fileName)
+                                    if (existing != null && existing.exists()) {
+                                        existing.delete()
+                                    }
+                                    val newFile = pickedDir.createFile("application/pdf", fileName)
+                                        ?: throw IllegalStateException("Failed to create file in custom folder")
+
+                                    applicationContext.contentResolver.openOutputStream(newFile.uri)?.use { os ->
+                                        os.write(bytes)
+                                        os.flush()
+                                    }
+
+                                    mainHandler.post {
+                                        result.success(hashMapOf(
+                                            "path" to newFile.uri.toString(),
+                                            "uri" to newFile.uri.toString(),
+                                            "fileName" to fileName,
+                                            "isContentUri" to true
+                                        ))
+                                    }
+                                    return@execute
+                                }
+
+                                // 2. Default Public Documents/PDF Maker directory
+                                val savedPath = saveToPublicDocuments(fileName, bytes)
+                                mainHandler.post {
+                                    result.success(hashMapOf(
+                                        "path" to savedPath,
+                                        "uri" to savedPath,
+                                        "fileName" to fileName,
+                                        "isContentUri" to savedPath.startsWith("content://")
+                                    ))
+                                }
+                            } catch (e: Exception) {
+                                mainHandler.post {
+                                    result.error("SAVE_ERROR", e.localizedMessage ?: "Failed to save PDF", null)
+                                }
+                            }
                         }
                     }
 
@@ -86,6 +261,154 @@ class MainActivity : FlutterActivity() {
                                 mainHandler.post {
                                     result.error("SAVE_ERROR", e.localizedMessage ?: "Failed to save PDF", null)
                                 }
+                            }
+                        }
+                    }
+
+                    "listPdfs" -> {
+                        val folderUri = call.argument<String>("folderUri")
+                        workerPool.execute {
+                            try {
+                                val list = mutableListOf<Map<String, Any>>()
+                                val seenKeys = mutableSetOf<String>()
+
+                                // 1. If custom SAF folderUri provided, query DocumentFile
+                                if (!folderUri.isNullOrBlank()) {
+                                    try {
+                                        val treeUri = Uri.parse(folderUri)
+                                        val pickedDir = DocumentFile.fromTreeUri(applicationContext, treeUri)
+                                        if (pickedDir != null && pickedDir.exists() && pickedDir.isDirectory) {
+                                            for (doc in pickedDir.listFiles()) {
+                                                val name = doc.name ?: continue
+                                                if (name.endsWith(".pdf", ignoreCase = true)) {
+                                                    val key = doc.uri.toString()
+                                                    if (seenKeys.add(key)) {
+                                                        list.add(mapOf(
+                                                            "path" to doc.uri.toString(),
+                                                            "uri" to doc.uri.toString(),
+                                                            "name" to name,
+                                                            "sizeBytes" to doc.length(),
+                                                            "modified" to doc.lastModified(),
+                                                            "isContentUri" to true
+                                                        ))
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } catch (e: Exception) {
+                                        // Ignore and continue
+                                    }
+                                } else {
+                                    // 2. Default folder: Documents/PDF Maker (+ legacy folders)
+                                    // First: MediaStore query (Android 10+ compliant, finds all PDFs in Documents/PDF Maker)
+                                    try {
+                                        val queryUri = MediaStore.Files.getContentUri("external")
+                                        val projection = arrayOf(
+                                            MediaStore.Files.FileColumns._ID,
+                                            MediaStore.Files.FileColumns.DISPLAY_NAME,
+                                            MediaStore.Files.FileColumns.SIZE,
+                                            MediaStore.Files.FileColumns.DATE_MODIFIED,
+                                            MediaStore.Files.FileColumns.DATA
+                                        )
+                                        val selection = "(${MediaStore.Files.FileColumns.MIME_TYPE} = ? OR ${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE '%.pdf') AND " +
+                                            "(${MediaStore.Files.FileColumns.DATA} LIKE '%/Documents/PDF Maker/%' OR " +
+                                            "${MediaStore.Files.FileColumns.DATA} LIKE '%/Documents/PDF Maker Pro/%' OR " +
+                                            "${MediaStore.Files.FileColumns.DATA} LIKE '%/Documents/PDF documents(pdf_maker)/%' OR " +
+                                            "${MediaStore.Files.FileColumns.RELATIVE_PATH} LIKE 'Documents/PDF Maker%' OR " +
+                                            "${MediaStore.Files.FileColumns.RELATIVE_PATH} LIKE 'Documents/PDF Maker Pro%')"
+                                        val selectionArgs = arrayOf("application/pdf")
+
+                                        applicationContext.contentResolver.query(
+                                            queryUri,
+                                            projection,
+                                            selection,
+                                            selectionArgs,
+                                            "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
+                                        )?.use { cursor ->
+                                            val idCol = cursor.getColumnIndex(MediaStore.Files.FileColumns._ID)
+                                            val nameCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.DISPLAY_NAME)
+                                            val sizeCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.SIZE)
+                                            val modCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.DATE_MODIFIED)
+                                            val dataCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.DATA)
+
+                                            while (cursor.moveToNext()) {
+                                                val id = if (idCol >= 0) cursor.getLong(idCol) else -1
+                                                val name = if (nameCol >= 0) cursor.getString(nameCol) else null
+                                                val size = if (sizeCol >= 0) cursor.getLong(sizeCol) else 0L
+                                                val modSec = if (modCol >= 0) cursor.getLong(modCol) else 0L
+                                                val dataPath = if (dataCol >= 0) cursor.getString(dataCol) else null
+
+                                                val displayName = name ?: (dataPath?.let { File(it).name } ?: "PDF_${id}.pdf")
+                                                if (!displayName.endsWith(".pdf", ignoreCase = true)) continue
+
+                                                val contentUri = if (id >= 0) {
+                                                    ContentUris.withAppendedId(queryUri, id).toString()
+                                                } else null
+
+                                                val filePath = dataPath ?: contentUri ?: ""
+                                                val key = displayName.lowercase()
+                                                if (seenKeys.add(key)) {
+                                                    list.add(mapOf(
+                                                        "path" to filePath,
+                                                        "uri" to (contentUri ?: filePath),
+                                                        "name" to displayName,
+                                                        "sizeBytes" to size,
+                                                        "modified" to (modSec * 1000L),
+                                                        "isContentUri" to filePath.startsWith("content://")
+                                                    ))
+                                                }
+                                            }
+                                        }
+                                    } catch (e: Exception) {
+                                        // Ignore and continue
+                                    }
+
+                                    // Second: Direct filesystem scan of known paths
+                                    val dirsToScan = mutableListOf<File>()
+                                    val publicDocs = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
+                                    dirsToScan.add(File(publicDocs, "PDF Maker"))
+                                    dirsToScan.add(File(publicDocs, "PDF Maker Pro"))
+                                    dirsToScan.add(File(publicDocs, "PDF documents(pdf_maker)"))
+
+                                    // App-specific external & internal documents
+                                    try {
+                                        applicationContext.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)?.let {
+                                            dirsToScan.add(File(it, "PDF Maker"))
+                                            dirsToScan.add(it)
+                                        }
+                                        dirsToScan.add(File(applicationContext.filesDir, "PDF Maker"))
+                                    } catch (_: Exception) {}
+
+                                    for (d in dirsToScan) {
+                                        try {
+                                            if (d.exists() && d.isDirectory) {
+                                                val files = d.listFiles() ?: continue
+                                                for (f in files) {
+                                                    if (f.isFile && f.name.endsWith(".pdf", ignoreCase = true)) {
+                                                        val key = f.name.lowercase()
+                                                        if (seenKeys.add(key)) {
+                                                            list.add(mapOf(
+                                                                "path" to f.absolutePath,
+                                                                "uri" to f.absolutePath,
+                                                                "name" to f.name,
+                                                                "sizeBytes" to f.length(),
+                                                                "modified" to f.lastModified(),
+                                                                "isContentUri" to false
+                                                            ))
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        } catch (_: Exception) {}
+                                    }
+                                }
+
+                                // Sort by modified date descending
+                                list.sortByDescending { (it["modified"] as? Long) ?: 0L }
+
+                                mainHandler.post { result.success(list) }
+                            } catch (e: Exception) {
+                                mainHandler.post { result.error("LIST_ERROR", e.localizedMessage ?: "Failed to list PDFs", null) }
                             }
                         }
                     }
@@ -158,8 +481,6 @@ class MainActivity : FlutterActivity() {
 
                                 val normRot = ((rotationDegrees % 360) + 360) % 360
 
-                                // Fast path: if basePreviewPath already exists as an EXIF-normalized thumbnail
-                                // and rotation is 0°, read its bytes & bounds directly without re-encoding JPEG!
                                 if (useExistingBase && normRot == 0) {
                                     val baseFile = File(basePreviewPath!!)
                                     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -292,7 +613,6 @@ class MainActivity : FlutterActivity() {
                         workerPool.execute {
                             try {
                                 val hasCustomCrop = quadList != null && quadList.size == 8
-                                // When only rotating (no custom crop), use the already-downsampled basePreviewPath if available
                                 val inputPath = if (!hasCustomCrop &&
                                     !basePreviewPath.isNullOrBlank() &&
                                     basePreviewPath != sourcePath &&
@@ -416,6 +736,50 @@ class MainActivity : FlutterActivity() {
             }
     }
 
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_CODE_PICK_DIRECTORY) {
+            val res = pendingDirectoryResult
+            pendingDirectoryResult = null
+            if (resultCode == Activity.RESULT_OK && data?.data != null) {
+                val treeUri = data.data!!
+                try {
+                    val takeFlags = (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                    contentResolver.takePersistableUriPermission(treeUri, takeFlags)
+                } catch (_: Exception) {}
+
+                val docFile = DocumentFile.fromTreeUri(applicationContext, treeUri)
+                val displayPath = formatTreeUriDisplayPath(treeUri, docFile?.name)
+                res?.success(mapOf(
+                    "uri" to treeUri.toString(),
+                    "displayPath" to displayPath
+                ))
+            } else {
+                res?.success(null)
+            }
+        }
+    }
+
+    private fun formatTreeUriDisplayPath(uri: Uri, docName: String?): String {
+        try {
+            val docId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                DocumentsContract.getTreeDocumentId(uri)
+            } else {
+                uri.lastPathSegment ?: ""
+            }
+            val decoded = Uri.decode(docId)
+            if (decoded.startsWith("primary:")) {
+                val subPath = decoded.substringAfter("primary:").trim('/')
+                return if (subPath.isEmpty()) "Documents/PDF Maker" else subPath
+            } else if (decoded.contains(":")) {
+                val parts = decoded.split(":", limit = 2)
+                val sub = parts[1].trim('/')
+                return if (sub.isEmpty()) "SD Card" else "SD Card/$sub"
+            }
+        } catch (_: Exception) {}
+        return docName ?: "Documents/PDF Maker"
+    }
+
     private fun processSinglePageBitmap(
         sourcePath: String,
         fallbackPath: String?,
@@ -445,10 +809,6 @@ class MainActivity : FlutterActivity() {
         return bitmap
     }
 
-    /**
-     * Hardware-accelerated subsampled JPEG/PNG decoding via BitmapFactory + ExifInterface.
-     * Decodes a 12MP–48MP camera image in ~15–30ms instead of ~1,500ms in pure Dart.
-     */
     private fun decodeExifNormalizedBitmap(filePath: String, maxDimension: Int): Bitmap? {
         val file = File(filePath)
         if (!file.exists()) return null
@@ -507,10 +867,6 @@ class MainActivity : FlutterActivity() {
         return Bitmap.createBitmap(input, 0, 0, input.width, input.height, matrix, true)
     }
 
-    /**
-     * High-speed 4-corner perspective rectification using Android's Skia C++ `Matrix.setPolyToPoly`.
-     * Warps and flattens a quadrilateral document selection in <15ms while preserving Euclidean aspect ratio.
-     */
     private fun perspectiveCropBitmap(input: Bitmap, quad: List<Double>): Bitmap {
         val w = input.width
         val h = input.height
@@ -525,7 +881,6 @@ class MainActivity : FlutterActivity() {
         val blX = (quad[6] * w).toFloat().coerceIn(0f, (w - 1).toFloat())
         val blY = (quad[7] * h).toFloat().coerceIn(0f, (h - 1).toFloat())
 
-        // Check if effectively full-frame
         if (quad[0] <= 0.005 && quad[1] <= 0.005 &&
             quad[2] >= 0.995 && quad[3] <= 0.005 &&
             quad[4] >= 0.995 && quad[5] >= 0.995 &&
@@ -645,18 +1000,39 @@ class MainActivity : FlutterActivity() {
                     os.write(bytes)
                     os.flush()
                 }
-                return File(targetDir, fileName).absolutePath
+
+                // Query the actual data path if available
+                var actualPath = File(targetDir, fileName).absolutePath
+                try {
+                    resolver.query(uri, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { cursor ->
+                        if (cursor.moveToFirst()) {
+                            val idx = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                            if (idx >= 0) {
+                                val p = cursor.getString(idx)
+                                if (!p.isNullOrBlank()) actualPath = p
+                            }
+                        }
+                    }
+                } catch (_: Exception) {}
+
+                return actualPath
             }
             throw IllegalStateException("Unable to write to public Documents directory")
         }
     }
 
     private fun exportFileToPublicDownloads(sourcePath: String, fileName: String): String {
-        val sourceFile = File(sourcePath)
-        if (!sourceFile.exists()) {
-            throw IllegalStateException("Source PDF does not exist: $sourcePath")
+        val bytes = if (sourcePath.startsWith("content://")) {
+            applicationContext.contentResolver.openInputStream(Uri.parse(sourcePath))?.use { it.readBytes() }
+                ?: throw IllegalStateException("Could not read content URI: $sourcePath")
+        } else {
+            val sourceFile = File(sourcePath)
+            if (!sourceFile.exists()) {
+                throw IllegalStateException("Source PDF does not exist: $sourcePath")
+            }
+            sourceFile.readBytes()
         }
-        val bytes = sourceFile.readBytes()
+
         val publicDownloadsRoot = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
         val targetDir = File(publicDownloadsRoot, "PDF Maker")
 
@@ -667,7 +1043,7 @@ class MainActivity : FlutterActivity() {
             var targetFile = File(targetDir, fileName)
             val baseName = fileName.removeSuffix(".pdf")
             var counter = 1
-            while (targetFile.exists() && targetFile.absolutePath != sourceFile.absolutePath) {
+            while (targetFile.exists() && targetFile.absolutePath != sourcePath) {
                 targetFile = File(targetDir, "${baseName}_$counter.pdf")
                 counter++
             }

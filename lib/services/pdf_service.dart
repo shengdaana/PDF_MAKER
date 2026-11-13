@@ -76,12 +76,13 @@ class PdfService {
   static const MethodChannel _nativeChannel =
       MethodChannel('com.introbird.pdfmakerflutter/native_files');
 
-  /// Opens a generated PDF file using Android's FileProvider (content:// URI) and
-  /// standard ACTION_VIEW intent — requires zero MANAGE_EXTERNAL_STORAGE permission.
-  static Future<void> openPdfFile(BuildContext context, File file) async {
+  /// Opens a generated PDF file using Android's FileProvider or content:// URI and
+  /// standard ACTION_VIEW intent — works with both local and SAF paths.
+  static Future<void> openPdfFile(BuildContext context, dynamic fileOrPath) async {
     final strings = AppStateScope.of(context).strings;
+    final String path = fileOrPath is File ? fileOrPath.path : fileOrPath.toString();
     try {
-      await _nativeChannel.invokeMethod('openPdf', {'path': file.path});
+      await _nativeChannel.invokeMethod('openPdf', {'path': path});
     } on PlatformException catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -101,16 +102,107 @@ class PdfService {
     }
   }
 
-  /// Exports a single PDF file to `/storage/emulated/0/Download/PDF Maker/`
+  /// Opens Android SAF Storage Access Framework folder picker (`ACTION_OPEN_DOCUMENT_TREE`)
+  /// returning a map with persistable 'uri' and user-friendly 'displayPath'.
+  static Future<Map<String, String>?> pickCustomFolder() async {
+    if (Platform.isAndroid) {
+      try {
+        final result = await _nativeChannel.invokeMapMethod<String, String>('pickDirectory');
+        return result;
+      } catch (e) {
+        debugPrint('Error picking SAF folder: $e');
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /// Lists all generated PDFs via native MediaStore / SAF DocumentFile / app directories.
+  /// Bypasses Android 10+ scoped storage restrictions cleanly.
+  static Future<List<Map<String, dynamic>>> listGeneratedPdfs(AppSettings settings) async {
+    if (Platform.isAndroid) {
+      try {
+        final List<dynamic>? results = await _nativeChannel.invokeListMethod<dynamic>(
+          'listPdfs',
+          {'folderUri': settings.saveFolderUri},
+        );
+        if (results != null) {
+          return results.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+        }
+      } catch (e) {
+        debugPrint('Error listing PDFs via native channel: $e');
+      }
+    }
+    return [];
+  }
+
+  /// Deletes a PDF file via native ContentResolver (for SAF / MediaStore) or filesystem.
+  static Future<bool> deletePdfFile(String path) async {
+    if (Platform.isAndroid) {
+      try {
+        final bool? deleted = await _nativeChannel.invokeMethod<bool>('deletePdf', {'path': path});
+        if (deleted == true) return true;
+      } catch (e) {
+        debugPrint('Error deleting PDF via native channel: $e');
+      }
+    }
+    try {
+      final f = File(path);
+      if (await f.exists()) {
+        await f.delete();
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /// Reads bytes from a PDF file path or content:// URI.
+  static Future<Uint8List> readPdfBytes(String path) async {
+    if (Platform.isAndroid && (path.startsWith('content://') || !File(path).existsSync())) {
+      try {
+        final Uint8List? bytes = await _nativeChannel.invokeMethod<Uint8List>(
+          'readPdfBytes',
+          {'path': path},
+        );
+        if (bytes != null) return bytes;
+      } catch (e) {
+        debugPrint('Native readPdfBytes error: $e');
+      }
+    }
+    return File(path).readAsBytes();
+  }
+
+  /// Obtains a shareable local file path for content:// URIs.
+  static Future<String> getShareableFilePath(String path, String fileName) async {
+    if (Platform.isAndroid && path.startsWith('content://')) {
+      try {
+        final String? localPath = await _nativeChannel.invokeMethod<String>(
+          'getShareableFilePath',
+          {'path': path, 'fileName': fileName},
+        );
+        if (localPath != null && localPath.isNotEmpty) {
+          return localPath;
+        }
+      } catch (e) {
+        debugPrint('Native getShareableFilePath error: $e');
+      }
+    }
+    return path;
+  }
+
+  /// Exports a single PDF file or path to `/storage/emulated/0/Download/PDF Maker/`
   /// via the native Android MediaStore / Downloads channel.
-  static Future<String?> exportPdfToDownloads(File sourceFile) async {
-    final String fileName = sourceFile.uri.pathSegments.last;
+  static Future<String?> exportPdfToDownloads(dynamic sourceFileOrPath) async {
+    final String sourcePath = sourceFileOrPath is File ? sourceFileOrPath.path : sourceFileOrPath.toString();
+    final String fileName = sourceFileOrPath is File
+        ? sourceFileOrPath.uri.pathSegments.last
+        : (sourcePath.contains('/') ? sourcePath.split('/').last : 'document.pdf');
     if (Platform.isAndroid) {
       try {
         final String? exportedPath = await _nativeChannel.invokeMethod<String>(
           'exportPdfToDownloads',
           {
-            'sourcePath': sourceFile.path,
+            'sourcePath': sourcePath,
             'fileName': fileName,
           },
         );
@@ -128,8 +220,10 @@ class PdfService {
         await downloadsDir.create(recursive: true);
       }
       final String targetPath = '${downloadsDir.path}/$fileName';
-      final File copied = await sourceFile.copy(targetPath);
-      return copied.path;
+      final Uint8List bytes = await readPdfBytes(sourcePath);
+      final File targetFile = File(targetPath);
+      await targetFile.writeAsBytes(bytes);
+      return targetFile.path;
     } catch (_) {
       return null;
     }
@@ -147,7 +241,7 @@ class PdfService {
       final int end = min(start + batchSize, paths.length);
       final List<Future<String?>> futures = [];
       for (int i = start; i < end; i++) {
-        futures.add(exportPdfToDownloads(File(paths[i])));
+        futures.add(exportPdfToDownloads(paths[i]));
       }
       final results = await Future.wait(futures);
       for (final res in results) {
@@ -496,32 +590,36 @@ class PdfService {
         '${now.second.toString().padLeft(2, '0')}';
     final String fileName = 'PDF_$timeStamp.pdf';
 
-    // 6. Save to Public Device Storage (/storage/emulated/0/Documents/PDF Maker/)
+    // 6. Save to Public Device Storage or user-selected SAF folder
     File? savedFile;
+    String finalPath = '';
     if (Platform.isAndroid) {
       try {
         final String? savedPath = await _nativeChannel.invokeMethod<String>(
-          'savePdfToPublicDocuments',
+          'savePdf',
           {
             'fileName': fileName,
             'bytes': pdfBytes,
+            'folderUri': settings.saveFolderUri,
           },
         );
         if (savedPath != null && savedPath.isNotEmpty) {
+          finalPath = savedPath;
           savedFile = File(savedPath);
         }
       } catch (e) {
-        debugPrint('Native savePdfToPublicDocuments fallback: $e');
+        debugPrint('Native savePdf fallback: $e');
       }
     }
 
-    if (savedFile == null) {
+    if (savedFile == null || finalPath.isEmpty) {
       final Directory baseDir = await getPdfStorageDirectory();
       if (!await baseDir.exists()) {
         await baseDir.create(recursive: true);
       }
       savedFile = File('${baseDir.path}/$fileName');
       await savedFile.writeAsBytes(pdfBytes);
+      finalPath = savedFile.path;
     }
 
     return PdfGenerationResult(
@@ -529,7 +627,7 @@ class PdfService {
       fileName: fileName,
       pageCount: preparedPages.isNotEmpty ? preparedPages.length : totalInputPages,
       fileSizeBytes: pdfBytes.length,
-      savedPath: savedFile.path,
+      savedPath: finalPath,
     );
   }
 }
